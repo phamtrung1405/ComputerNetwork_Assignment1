@@ -1,0 +1,48 @@
+# Các file trung gian do trình biên dịch LaTeX / Latexmk tạo ra
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+
+# Các file tạm khác thường phát sinh khi dùng TeX
+*.bbl
+*.blg
+*.brf
+*.bcf
+*.run.xml
+*.nav
+*.snm
+*.vrb
+*.idx
+*.ilg
+*.ind
+*.lof
+*.lot
+*.xdv
+
+# File sao lưu của trình soạn thảo
+*~
+*.bak
+*.swp
+
+# Thư mục cấu hình của VS Code (tuỳ chọn)
+.vscode/
+
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# venv
+.venv/
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# File PDF xuất bản 
+# (Bỏ dấu # ở dòng dưới nếu bạn KHÔNG muốn đẩy file PDF lên Git)
+# *.pdf

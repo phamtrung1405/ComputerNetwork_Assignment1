@@ -2,7 +2,7 @@
 run_server.py
 ~~~~~~~~~~~~~
 Script khởi chạy máy chủ trung tâm StreamChat:
-- Web UI & WebSocket Server: Lắng nghe trên cổng 8080 (Client-Server WebSocket chuẩn).
+- Web UI & SSE Server: Lắng nghe trên cổng 8080 (Client-Server HTTP & SSE chuẩn).
 - UDP Transport Engine: Lắng nghe trên cổng UDP 9000 (đáp ứng tiêu chuẩn truyền tải phân tán).
 
 Sử dụng:
@@ -51,14 +51,14 @@ def main() -> None:
         "--web-port",
         type=int,
         default=DEFAULT_HTTP_PORT,
-        help=f"Cổng Web UI và WebSocket (mặc định: {DEFAULT_HTTP_PORT})",
+        help=f"Cổng Web UI và SSE (mặc định: {DEFAULT_HTTP_PORT})",
     )
     args = parser.parse_args()
 
     print("===============================================================")
     print("                 STREAMCHAT CENTRAL SERVER")
     print("===============================================================")
-    print(f"  * Web & WebSocket Server: http://127.0.0.1:{args.web_port}")
+    print(f"  * Web UI & SSE Server:    http://127.0.0.1:{args.web_port}")
     print(f"  * UDP Transport Engine:   127.0.0.1:{args.port} (UDP)")
     print("  * Ho tro hang tram tai khoan mo tren cung dia chi:cong 8080")
     print("===============================================================")

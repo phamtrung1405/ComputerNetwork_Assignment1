@@ -1,9 +1,9 @@
 /**
  * StreamChat — Client-side Application Logic
  *
- * Sử dụng kiến trúc Client-Server chuẩn với WebSocket RFC 6455
- * Quản lý độc lập từng phiên trình duyệt, cho phép mở hàng trăm tài khoản
- * trên cùng một địa chỉ:cổng 8080.
+ * Sử dụng kiến trúc Client-Server chuẩn với HTTP REST và Server-Sent Events (SSE).
+ * Tuân thủ 100% quy định môn học: Không sử dụng thư viện WebSocket.
+ * Quản lý độc lập từng phiên trình duyệt trên cùng một địa chỉ:cổng 8080.
  */
 
 "use strict";
@@ -58,9 +58,8 @@ const fileTransfersDiv = document.getElementById("file-transfers");
 let currentUsername = "";
 let isConnected = false;
 let activeTarget = "all";  // "all" hoặc username cụ thể
-let socket = null;
+let eventSource = null;
 let selectedFile = null;
-let reconnectTimer = null;
 
 // ═══════════════════════════════════════════════
 // UTILITIES
@@ -93,87 +92,54 @@ function escapeHtml(text) {
 }
 
 // ═══════════════════════════════════════════════
-// WEBSOCKET MANAGEMENT
+// SERVER-SENT EVENTS (SSE) MANAGEMENT
 // ═══════════════════════════════════════════════
 
 /**
- * Khởi tạo kết nối WebSocket đến server.
- * @param {Function} [onOpenCallback] - Hàm gọi khi kết nối mở thành công.
+ * Khởi tạo kết nối SSE (EventSource) thời gian thực đến máy chủ.
+ * @param {string} username - Tên người dùng đã đăng nhập.
  */
-function initWebSocket(onOpenCallback) {
-    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        if (socket.readyState === WebSocket.OPEN && onOpenCallback) {
-            onOpenCallback();
-        }
-        return;
+function initSSE(username) {
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
     }
 
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-    
+    const sseUrl = `/api/events?username=${encodeURIComponent(username)}`;
     try {
-        socket = new WebSocket(wsUrl);
+        eventSource = new EventSource(sseUrl);
     } catch (err) {
-        showLoginError("Trình duyệt không thể tạo kết nối WebSocket: " + err.message);
+        showLoginError("Trình duyệt không hỗ trợ EventSource: " + err.message);
         return;
     }
 
-    socket.onopen = () => {
-        connectionStatus.textContent = "● Đã kết nối";
+    eventSource.onopen = () => {
+        connectionStatus.textContent = "● Đã kết nối (HTTP/SSE)";
         connectionStatus.className = "conn-status connected";
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        }
-        if (onOpenCallback) {
-            onOpenCallback();
-        }
     };
 
-    socket.onmessage = (event) => {
+    eventSource.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
             handleServerEvent(data);
         } catch (err) {
-            console.warn("WebSocket parse error:", err, event.data);
+            console.warn("SSE parse error:", err, event.data);
         }
     };
 
-    socket.onclose = () => {
-        connectionStatus.textContent = "● Mất kết nối";
-        connectionStatus.className = "conn-status disconnected";
-        
-        // Tự động kết nối lại nếu phiên đang hoạt động
-        if (isConnected && !reconnectTimer) {
-            reconnectTimer = setTimeout(() => {
-                if (isConnected) {
-                    initWebSocket();
-                }
-            }, 3000);
+    eventSource.onerror = () => {
+        if (isConnected) {
+            connectionStatus.textContent = "● Đang kết nối lại...";
+            connectionStatus.className = "conn-status disconnected";
         }
     };
-
-    socket.onerror = (err) => {
-        console.error("WebSocket gặp sự cố:", err);
-    };
-}
-
-/**
- * Gửi thông điệp JSON qua WebSocket.
- */
-function wsSend(data) {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(data));
-        return true;
-    }
-    return false;
 }
 
 // ═══════════════════════════════════════════════
-// LOGIN FLOW
+// LOGIN FLOW (HTTP POST)
 // ═══════════════════════════════════════════════
 
-loginForm.addEventListener("submit", (e) => {
+loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const username = loginUsername.value.trim().toLowerCase();
     const password = loginPassword.value.trim();
@@ -185,15 +151,30 @@ loginForm.addEventListener("submit", (e) => {
     loginBtn.disabled = true;
     loginError.classList.add("hidden");
 
-    currentUsername = username;
-
-    initWebSocket(() => {
-        wsSend({
-            type: "login",
-            username: username,
-            password: password,
+    try {
+        const response = await fetch("/api/login", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                username: username,
+                password: password,
+            }),
         });
-    });
+
+        const data = await response.json();
+
+        if (response.ok && data.status === "ok") {
+            currentUsername = data.username || username;
+            initSSE(currentUsername);
+            handleAuthSuccess(data);
+        } else {
+            showLoginError(data.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
+        }
+    } catch (err) {
+        showLoginError("Lỗi kết nối máy chủ: " + err.message);
+    }
 });
 
 function showLoginError(msg) {
@@ -239,14 +220,9 @@ function handleServerEvent(data) {
 }
 
 function handleKicked(data) {
-    if (socket) {
-        socket.onclose = null; // Tránh tự động kết nối lại khi đã bị đá
-        socket.close();
-        socket = null;
-    }
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
     }
     isConnected = false;
     currentUsername = "";
@@ -266,21 +242,22 @@ function handleKicked(data) {
     onlineCountSpan.textContent = "0";
 }
 
+function handleAuthSuccess(data) {
+    currentUsername = data.username || currentUsername;
+    displayUsername.textContent = currentUsername;
+    userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
+
+    loginScreen.classList.remove("active");
+    chatScreen.classList.add("active");
+    isConnected = true;
+    msgInput.focus();
+
+    addSystemMessage(data.message || `Đăng nhập thành công với tài khoản @${currentUsername}!`);
+}
+
 function handleAuthResponse(data) {
     if (data.success) {
-        currentUsername = data.username || currentUsername;
-        displayUsername.textContent = currentUsername;
-        userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
-
-        loginScreen.classList.remove("active");
-        chatScreen.classList.add("active");
-        isConnected = true;
-        msgInput.focus();
-
-        addSystemMessage(data.message || `Đăng nhập thành công với tài khoản @${currentUsername}!`);
-        
-        // Yêu cầu danh sách user online
-        wsSend({ type: "get_users" });
+        handleAuthSuccess(data);
     } else {
         showLoginError(data.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
         isConnected = false;
@@ -398,7 +375,7 @@ function addSystemMessage(text) {
     scrollToBottom();
 }
 
-function sendMessage() {
+async function sendMessage() {
     const text = msgInput.value.trim();
     if (!text) return;
 
@@ -412,16 +389,27 @@ function sendMessage() {
         actualText = atMatch[2];
     }
 
-    const ok = wsSend({
-        type: "send",
-        target: target,
-        text: actualText,
-    });
+    msgInput.value = "";
 
-    if (ok) {
-        msgInput.value = "";
-    } else {
-        addSystemMessage("⚠️ Không thể gửi tin nhắn. Hãy kiểm tra kết nối WebSocket!");
+    try {
+        const res = await fetch("/api/send", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                from: currentUsername,
+                target: target,
+                text: actualText,
+            }),
+        });
+
+        const result = await res.json();
+        if (!res.ok || result.status !== "ok") {
+            addSystemMessage("⚠️ Không thể gửi tin nhắn: " + (result.message || "Lỗi máy chủ"));
+        }
+    } catch (err) {
+        addSystemMessage("⚠️ Lỗi mạng khi gửi tin nhắn: " + err.message);
     }
 }
 
@@ -661,9 +649,12 @@ fileSendBtn.addEventListener("click", () => {
 // ═══════════════════════════════════════════════
 
 btnDisconnect.addEventListener("click", () => {
-    if (socket) {
-        socket.close();
-        socket = null;
+    if (currentUsername) {
+        fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
+    }
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
     }
     isConnected = false;
     currentUsername = "";

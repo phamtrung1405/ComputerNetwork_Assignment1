@@ -146,7 +146,7 @@ def main() -> None:
         "--http-port",
         type=int,
         default=8080,
-        help="Cổng Web UI và WebSocket duy nhất (mặc định: 8080)",
+        help="Cổng Web UI và SSE duy nhất (mặc định: 8080)",
     )
     parser.add_argument(
         "--no-browser",
@@ -177,7 +177,7 @@ def main() -> None:
     print("        STREAMCHAT — KHỞI CHẠY HỆ THỐNG TRÊN PORT 8080")
     print("=" * 65)
 
-    # 2. Khởi chạy Server duy nhất (cung cấp cả Web UI, WebSocket và UDP)
+    # 2. Khởi chạy Server duy nhất (cung cấp cả Web UI, SSE và UDP)
     print(f"\n[1/2] Đang khởi động Server tại cổng Web {args.http_port} & UDP {args.server_port}...")
     server_cmd = [
         sys.executable,
@@ -203,7 +203,7 @@ def main() -> None:
     print("\n" + "=" * 65)
     print("  HỆ THỐNG ĐÃ SẴN SÀNG HOẠT ĐỘNG TRÊN 1 PORT DUY NHẤT!")
     print("=" * 65)
-    print(f"  * Dia chi Web UI & WebSocket: {web_url}")
+    print(f"  * Dia chi Web UI & SSE:       {web_url}")
     print(f"  * UDP Transport Port:          127.0.0.1:{args.server_port}")
     print("  * Moi tab trinh duyet hoat dong nhu mot Client doc lap.")
     print("  * Co the mo hang tram tab hoac tu cac may khac trong mang LAN:")

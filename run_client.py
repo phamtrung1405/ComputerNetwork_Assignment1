@@ -2,7 +2,7 @@
 run_client.py
 ~~~~~~~~~~~~~
 Script mở giao diện người dùng Client trên trình duyệt web.
-Trong kiến trúc Client-Server WebSocket trên port 8080, tất cả client
+Trong kiến trúc Client-Server HTTP & SSE trên port 8080, tất cả client
 truy cập cùng địa chỉ http://<server_ip>:8080 để đăng nhập tài khoản độc lập.
 
 Sử dụng:
@@ -46,7 +46,7 @@ def main() -> None:
         "--http-port",
         type=int,
         default=DEFAULT_HTTP_PORT,
-        help=f"Cổng Web UI và WebSocket (mặc định: {DEFAULT_HTTP_PORT})",
+        help=f"Cổng Web UI và SSE (mặc định: {DEFAULT_HTTP_PORT})",
     )
     parser.add_argument(
         "--no-browser",
@@ -59,7 +59,7 @@ def main() -> None:
     print("===============================================================")
     print("                    STREAMCHAT CLIENT")
     print("===============================================================")
-    print(f"  * Dia chi ket noi Web UI & WebSocket: {url}")
+    print(f"  * Dia chi ket noi Web UI (HTTP & SSE): {url}")
     print("  * Ban co the mo nhieu tab trinh duyet tren cung dia chi nay")
     print("    de dang nhap dong thoi nhieu tai khoan khac nhau.")
     print("===============================================================")

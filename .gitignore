@@ -46,3 +46,6 @@ __pycache__/
 # File PDF xuất bản 
 # (Bỏ dấu # ở dòng dưới nếu bạn KHÔNG muốn đẩy file PDF lên Git)
 # *.pdf
+
+# Upload file
+uploads/

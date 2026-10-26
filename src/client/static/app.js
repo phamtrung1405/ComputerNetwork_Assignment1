@@ -33,8 +33,18 @@ const btnFile = document.getElementById("btn-file");
 const btnDisconnect = document.getElementById("btn-disconnect");
 const connectionStatus = document.getElementById("connection-status");
 const fileDialog = document.getElementById("file-dialog");
-const filePathInput = document.getElementById("file-path-input");
+const fileDialogClose = document.getElementById("file-dialog-close");
+const fileInput = document.getElementById("file-input");
+const fileDropZone = document.getElementById("file-drop-zone");
+const btnBrowseFile = document.getElementById("btn-browse-file");
+const filePreviewCard = document.getElementById("file-preview-card");
+const filePreviewName = document.getElementById("file-preview-name");
+const filePreviewSize = document.getElementById("file-preview-size");
+const fileRemoveBtn = document.getElementById("file-remove-btn");
 const fileTargetInput = document.getElementById("file-target-input");
+const toggleManualPath = document.getElementById("toggle-manual-path");
+const manualPathContainer = document.getElementById("manual-path-container");
+const filePathInput = document.getElementById("file-path-input");
 const fileSendBtn = document.getElementById("file-send-btn");
 const fileCancelBtn = document.getElementById("file-cancel-btn");
 const fileTransfersDiv = document.getElementById("file-transfers");
@@ -46,6 +56,7 @@ const fileTransfersDiv = document.getElementById("file-transfers");
 let currentUsername = "";
 let eventSource = null;
 let isConnected = false;
+let selectedFile = null;
 
 // ═══════════════════════════════════════════════
 // UTILITIES
@@ -390,42 +401,195 @@ msgInput.addEventListener("keydown", (e) => {
 // FILE TRANSFERS
 // ═══════════════════════════════════════════════
 
-btnFile.addEventListener("click", () => {
+/**
+ * Update the send button state based on selected file or manual path.
+ */
+function updateFileSendBtnState() {
+    const hasFile = selectedFile !== null;
+    const hasPath = filePathInput && filePathInput.value.trim().length > 0;
+    fileSendBtn.disabled = !(hasFile || hasPath);
+}
+
+/**
+ * Set the currently selected file and update UI preview.
+ * @param {File} file - Selected File object.
+ */
+function setSelectedFile(file) {
+    if (!file) return;
+    selectedFile = file;
+    filePreviewName.textContent = file.name;
+    filePreviewName.title = file.name;
+    filePreviewSize.textContent = formatBytes(file.size);
+
+    fileDropZone.classList.add("hidden");
+    filePreviewCard.classList.remove("hidden");
+    updateFileSendBtnState();
+}
+
+/**
+ * Clear the currently selected file and reset UI to drop zone.
+ */
+function clearSelectedFile() {
+    selectedFile = null;
+    if (fileInput) fileInput.value = "";
+    filePreviewCard.classList.add("hidden");
+    fileDropZone.classList.remove("hidden");
+    updateFileSendBtnState();
+}
+
+/**
+ * Open the file dialog.
+ */
+function openFileDialog() {
     fileDialog.classList.remove("hidden");
-    filePathInput.value = "";
-    fileTargetInput.value = "all";
-    filePathInput.focus();
-});
+    clearSelectedFile();
+    if (filePathInput) filePathInput.value = "";
+    if (manualPathContainer) manualPathContainer.classList.add("hidden");
+    if (fileTargetInput) fileTargetInput.value = "all";
+    updateFileSendBtnState();
+}
 
-fileCancelBtn.addEventListener("click", () => {
+/**
+ * Close the file dialog.
+ */
+function closeFileDialog() {
     fileDialog.classList.add("hidden");
+    clearSelectedFile();
+}
+
+btnFile.addEventListener("click", openFileDialog);
+fileCancelBtn.addEventListener("click", closeFileDialog);
+fileDialogClose?.addEventListener("click", closeFileDialog);
+document.querySelector(".dialog-backdrop")?.addEventListener("click", closeFileDialog);
+
+// File input browse click
+fileDropZone.addEventListener("click", () => {
+    fileInput.click();
 });
 
-document.querySelector(".dialog-backdrop")?.addEventListener("click", () => {
-    fileDialog.classList.add("hidden");
+btnBrowseFile?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    fileInput.click();
 });
 
+fileInput.addEventListener("change", () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+        setSelectedFile(fileInput.files[0]);
+    }
+});
+
+fileRemoveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearSelectedFile();
+});
+
+// Drag and drop handlers
+fileDropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.add("dragover");
+});
+
+fileDropZone.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.add("dragover");
+});
+
+fileDropZone.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.remove("dragover");
+});
+
+fileDropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.remove("dragover");
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        setSelectedFile(e.dataTransfer.files[0]);
+    }
+});
+
+// Manual path toggle
+toggleManualPath?.addEventListener("click", () => {
+    manualPathContainer.classList.toggle("hidden");
+    if (!manualPathContainer.classList.contains("hidden")) {
+        filePathInput.focus();
+    }
+});
+
+filePathInput?.addEventListener("input", () => {
+    updateFileSendBtnState();
+});
+
+// Send file button click
 fileSendBtn.addEventListener("click", async () => {
-    const filePath = filePathInput.value.trim();
     const target = fileTargetInput.value.trim() || "all";
 
-    if (!filePath) return;
+    if (selectedFile) {
+        // Send file chosen from computer via direct stream upload
+        const fileToSend = selectedFile;
+        fileSendBtn.disabled = true;
+        const originalText = fileSendBtn.textContent;
+        fileSendBtn.textContent = "Đang gửi...";
 
-    fileDialog.classList.add("hidden");
+        try {
+            const url = `/api/file?target=${encodeURIComponent(target)}&filename=${encodeURIComponent(fileToSend.name)}`;
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/octet-stream",
+                    "X-Filename": encodeURIComponent(fileToSend.name),
+                    "X-Target": encodeURIComponent(target),
+                },
+                body: fileToSend,
+            });
 
-    try {
-        const result = await apiCall("/api/file", "POST", {
-            file_path: filePath,
-            target: target,
-        });
+            const result = await response.json();
 
-        if (result.status === "ok") {
-            addSystemMessage(`📤 Bắt đầu gửi file... (Stream #${result.stream_id})`);
-        } else {
-            addSystemMessage("⚠️ " + result.message);
+            if (result.status === "ok") {
+                addSystemMessage(`📤 Bắt đầu gửi file ${fileToSend.name}... (Stream #${result.stream_id})`);
+                addFileTransfer(result.stream_id, fileToSend.name, fileToSend.size);
+                closeFileDialog();
+            } else {
+                addSystemMessage("⚠️ " + result.message);
+                fileSendBtn.disabled = false;
+                fileSendBtn.textContent = originalText;
+            }
+        } catch (err) {
+            addSystemMessage("⚠️ Lỗi gửi file: " + err.message);
+            fileSendBtn.disabled = false;
+            fileSendBtn.textContent = originalText;
         }
-    } catch (err) {
-        addSystemMessage("⚠️ Lỗi gửi file: " + err.message);
+    } else if (filePathInput && filePathInput.value.trim()) {
+        // Fallback: manual file path
+        const filePath = filePathInput.value.trim();
+        fileSendBtn.disabled = true;
+        const originalText = fileSendBtn.textContent;
+        fileSendBtn.textContent = "Đang gửi...";
+
+        try {
+            const result = await apiCall("/api/file", "POST", {
+                file_path: filePath,
+                target: target,
+            });
+
+            if (result.status === "ok") {
+                addSystemMessage(`📤 Bắt đầu gửi file... (Stream #${result.stream_id})`);
+                const filename = filePath.split(/[\\/]/).pop() || "file";
+                addFileTransfer(result.stream_id, filename, 0);
+                closeFileDialog();
+            } else {
+                addSystemMessage("⚠️ " + result.message);
+                fileSendBtn.disabled = false;
+                fileSendBtn.textContent = originalText;
+            }
+        } catch (err) {
+            addSystemMessage("⚠️ Lỗi gửi file: " + err.message);
+            fileSendBtn.disabled = false;
+            fileSendBtn.textContent = originalText;
+        }
     }
 });
 

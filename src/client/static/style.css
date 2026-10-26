@@ -720,6 +720,216 @@ html, body {
     padding: 10px 24px;
 }
 
+/* ── File Upload Dialog Enhancements ── */
+.file-upload-dialog {
+    max-width: 480px;
+}
+
+.dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.dialog-header h3 {
+    margin-bottom: 0 !important;
+}
+
+.dialog-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-fast);
+}
+
+.dialog-close-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.hidden-file-input {
+    display: none !important;
+}
+
+.file-drop-zone {
+    border: 2px dashed var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.file-drop-zone:hover {
+    border-color: var(--accent-primary);
+    background: rgba(108, 99, 255, 0.06);
+}
+
+.file-drop-zone.dragover {
+    border-color: var(--accent-secondary);
+    background: rgba(59, 130, 246, 0.12);
+    box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
+    transform: scale(1.01);
+}
+
+.drop-zone-icon {
+    color: var(--accent-primary);
+    transition: transform var(--transition-fast);
+}
+
+.file-drop-zone:hover .drop-zone-icon {
+    transform: translateY(-2px);
+}
+
+.drop-zone-text {
+    font-size: 14px;
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.drop-zone-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.btn-browse {
+    margin-top: 4px;
+    padding: 8px 18px;
+    background: var(--accent-gradient);
+    border: none;
+    border-radius: var(--radius-sm);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+    box-shadow: var(--shadow-sm);
+}
+
+.btn-browse:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--accent-glow);
+}
+
+/* File Preview Card */
+.file-preview-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 20px;
+    animation: fadeIn 0.2s ease;
+}
+
+.file-preview-icon {
+    width: 44px;
+    height: 44px;
+    background: rgba(108, 99, 255, 0.15);
+    border-radius: var(--radius-sm);
+    color: var(--accent-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.file-preview-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.file-preview-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-preview-size {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.btn-remove-file {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.btn-remove-file:hover {
+    background: var(--danger);
+    color: #fff;
+    transform: scale(1.05);
+}
+
+/* Manual Path Toggle */
+.manual-path-toggle-wrapper {
+    margin-top: 12px;
+}
+
+.toggle-link {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+    transition: color var(--transition-fast);
+}
+
+.toggle-link:hover {
+    color: var(--accent-primary);
+    text-decoration: underline;
+}
+
+.manual-path-container {
+    margin-top: 8px;
+    animation: fadeIn 0.15s ease;
+}
+
+.dialog .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    filter: grayscale(0.5);
+    transform: none !important;
+    box-shadow: none !important;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
     .sidebar {

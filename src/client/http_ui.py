@@ -16,10 +16,12 @@ import mimetypes
 import os
 import queue
 import socket
+import tempfile
 import threading
 import time
 from typing import Optional
-from urllib.parse import unquote, parse_qs
+from urllib.parse import unquote, parse_qs, urlsplit
+import uuid
 
 from client.client import ChatClient
 from common.constants import DEFAULT_HTTP_PORT
@@ -113,31 +115,51 @@ class HttpUI:
             client_socket: Socket TCP đã accept.
         """
         try:
-            client_socket.settimeout(10.0)
-            raw_request: bytes = client_socket.recv(65535)
-            if not raw_request:
+            client_socket.settimeout(15.0)
+            header_buf = bytearray()
+            while b"\r\n\r\n" not in header_buf:
+                chunk = client_socket.recv(4096)
+                if not chunk:
+                    break
+                header_buf.extend(chunk)
+
+            if b"\r\n\r\n" not in header_buf:
                 client_socket.close()
                 return
 
-            request_text: str = raw_request.decode("utf-8", errors="replace")
-            lines: list[str] = request_text.split("\r\n")
+            header_bytes, body_prefix = header_buf.split(b"\r\n\r\n", 1)
+            header_text = header_bytes.decode("iso-8859-1")
+            lines = header_text.split("\r\n")
             if not lines:
                 client_socket.close()
                 return
 
-            request_line: str = lines[0]
-            parts: list[str] = request_line.split(" ")
+            request_line = lines[0]
+            parts = request_line.split(" ")
             if len(parts) < 2:
                 client_socket.close()
                 return
 
-            method: str = parts[0]
-            path: str = unquote(parts[1])
+            method = parts[0].upper()
+            raw_path = parts[1]
+            split_url = urlsplit(raw_path)
+            path = unquote(split_url.path)
+            query_params = parse_qs(split_url.query)
 
-            # Tách body (sau \r\n\r\n)
-            body: str = ""
-            if "\r\n\r\n" in request_text:
-                body = request_text.split("\r\n\r\n", 1)[1]
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+
+            content_length = int(headers.get("content-length", 0))
+            content_type = headers.get("content-type", "")
+
+            # CORS Preflight
+            if method == "OPTIONS":
+                self._send_response(client_socket, 204, "text/plain", b"")
+                client_socket.close()
+                return
 
             # ── Routing ──
             if method == "GET" and path == "/":
@@ -153,11 +175,19 @@ class HttpUI:
             elif method == "GET" and path == "/api/progress":
                 self._handle_progress(client_socket)
             elif method == "POST" and path == "/api/login":
+                body = self._read_text_body(client_socket, body_prefix, content_length)
                 self._handle_login(client_socket, body)
             elif method == "POST" and path == "/api/send":
+                body = self._read_text_body(client_socket, body_prefix, content_length)
                 self._handle_send(client_socket, body)
             elif method == "POST" and path == "/api/file":
-                self._handle_file_upload(client_socket, body)
+                if content_type.startswith("application/json"):
+                    body = self._read_text_body(client_socket, body_prefix, content_length)
+                    self._handle_file_upload(client_socket, body)
+                else:
+                    self._handle_file_stream_upload(
+                        client_socket, query_params, headers, body_prefix, content_length
+                    )
             else:
                 self._send_response(client_socket, 404, "text/plain", b"Not Found")
                 client_socket.close()
@@ -167,6 +197,19 @@ class HttpUI:
                 client_socket.close()
             except OSError:
                 pass
+
+    def _read_text_body(
+        self, client_socket: socket.socket, body_prefix: bytes, content_length: int
+    ) -> str:
+        """Đọc toàn bộ nội dung body dạng text UTF-8."""
+        body_bytes = bytearray(body_prefix)
+        while len(body_bytes) < content_length:
+            to_read = min(4096, content_length - len(body_bytes))
+            chunk = client_socket.recv(to_read)
+            if not chunk:
+                break
+            body_bytes.extend(chunk)
+        return body_bytes.decode("utf-8", errors="replace")
 
     # ─────────────────────── Static files ────────────────────────
 
@@ -366,6 +409,96 @@ class HttpUI:
             )
         client_socket.close()
 
+    def _handle_file_stream_upload(
+        self,
+        client_socket: socket.socket,
+        query_params: dict,
+        headers: dict,
+        body_prefix: bytes,
+        content_length: int,
+    ) -> None:
+        """Xử lý upload file nhị phân trực tiếp từ trình duyệt qua POST /api/file.
+
+        Args:
+            client_socket: Socket client.
+            query_params: Query params từ URL.
+            headers: Headers của request.
+            body_prefix: Dữ liệu body đã đọc sẵn.
+            content_length: Tổng độ dài body.
+        """
+        try:
+            if self._client is None or not self._client.is_authenticated:
+                self._send_json_response(
+                    client_socket, 401, {"status": "error", "message": "Chưa đăng nhập"}
+                )
+                client_socket.close()
+                return
+
+            raw_filename = (
+                query_params.get("filename", [""])[0]
+                or headers.get("x-filename", "")
+                or "uploaded_file"
+            )
+            raw_filename = unquote(raw_filename)
+            safe_filename = os.path.basename(raw_filename) or "uploaded_file"
+
+            raw_target = (
+                query_params.get("target", ["all"])[0]
+                or headers.get("x-target", "")
+                or "all"
+            )
+            target = unquote(raw_target) if raw_target else "all"
+
+            # Lưu vào thư mục tạm thời riêng biệt theo từng lượt gửi
+            upload_subfolder = os.path.join(
+                tempfile.gettempdir(),
+                "streamchat_uploads",
+                f"{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}",
+            )
+            os.makedirs(upload_subfolder, exist_ok=True)
+            saved_path = os.path.join(upload_subfolder, safe_filename)
+
+            with open(saved_path, "wb") as f:
+                if body_prefix:
+                    f.write(body_prefix)
+                bytes_written = len(body_prefix)
+                while bytes_written < content_length:
+                    to_read = min(65536, content_length - bytes_written)
+                    chunk = client_socket.recv(to_read)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+
+            stream_id = self._client.start_file_transfer(saved_path, target)
+            if stream_id is not None:
+                self._send_json_response(
+                    client_socket,
+                    200,
+                    {
+                        "status": "ok",
+                        "stream_id": stream_id,
+                        "filename": safe_filename,
+                        "message": "Bắt đầu truyền file",
+                    },
+                )
+            else:
+                self._send_json_response(
+                    client_socket,
+                    400,
+                    {"status": "error", "message": "Không thể bắt đầu truyền file"},
+                )
+        except Exception as exc:
+            logger.error("Lỗi nhận file upload: %s", exc)
+            self._send_json_response(
+                client_socket, 500, {"status": "error", "message": str(exc)}
+            )
+        finally:
+            try:
+                client_socket.close()
+            except OSError:
+                pass
+
     def _handle_status(self, client_socket: socket.socket) -> None:
         """Xử lý GET /api/status.
 
@@ -418,7 +551,7 @@ class HttpUI:
             f"Content-Length: {len(body)}\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n"
+            "Access-Control-Allow-Headers: Content-Type, X-Filename, X-Target\r\n"
             "Connection: close\r\n"
             "\r\n"
         )

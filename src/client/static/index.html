@@ -126,19 +126,65 @@
     <!-- File dialog (hidden) -->
     <div id="file-dialog" class="dialog hidden">
         <div class="dialog-backdrop"></div>
-        <div class="dialog-content">
-            <h3>Gửi File</h3>
-            <div class="input-group">
-                <label for="file-path-input">Đường dẫn file</label>
-                <input type="text" id="file-path-input" placeholder="C:\path\to\file.txt">
+        <div class="dialog-content file-upload-dialog">
+            <div class="dialog-header">
+                <h3>Gửi Tệp Tin</h3>
+                <button id="file-dialog-close" class="dialog-close-btn" title="Đóng">✕</button>
             </div>
+
+            <!-- Thẻ input file ẩn để kích hoạt bộ chọn file gốc của máy -->
+            <input type="file" id="file-input" class="hidden-file-input">
+
+            <!-- Khu vực kéo thả / chọn file từ máy tính -->
+            <div id="file-drop-zone" class="file-drop-zone">
+                <div class="drop-zone-icon">
+                    <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                </div>
+                <div class="drop-zone-text">
+                    <strong>Nhấn để chọn file từ máy</strong>
+                    <span class="drop-zone-hint">hoặc kéo thả file vào đây</span>
+                </div>
+                <button type="button" id="btn-browse-file" class="btn-browse">
+                    📁 Chọn file từ máy
+                </button>
+            </div>
+
+            <!-- Card hiển thị xem trước file đã chọn -->
+            <div id="file-preview-card" class="file-preview-card hidden">
+                <div class="file-preview-icon">
+                    <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                </div>
+                <div class="file-preview-info">
+                    <span id="file-preview-name" class="file-preview-name"></span>
+                    <span id="file-preview-size" class="file-preview-size"></span>
+                </div>
+                <button type="button" id="file-remove-btn" class="btn-remove-file" title="Chọn file khác">✕</button>
+            </div>
+
+            <!-- Người nhận -->
             <div class="input-group">
                 <label for="file-target-input">Gửi đến</label>
                 <input type="text" id="file-target-input" placeholder="all (hoặc username)" value="all">
             </div>
+
+            <!-- Tùy chọn nhập đường dẫn thủ công (mở rộng khi cần) -->
+            <div class="manual-path-toggle-wrapper">
+                <button type="button" id="toggle-manual-path" class="toggle-link">Hoặc nhập đường dẫn thủ công ▾</button>
+                <div id="manual-path-container" class="manual-path-container hidden">
+                    <input type="text" id="file-path-input" placeholder="C:\path\to\file.txt">
+                </div>
+            </div>
+
             <div class="dialog-actions">
                 <button id="file-cancel-btn" class="btn-secondary">Hủy</button>
-                <button id="file-send-btn" class="btn-primary">Gửi</button>
+                <button id="file-send-btn" class="btn-primary" disabled>Gửi Tệp</button>
             </div>
         </div>
     </div>

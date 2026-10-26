@@ -63,6 +63,13 @@ class HttpUI:
         self._running: bool = False
         self._sse_clients: list[socket.socket] = []
         self._sse_lock: threading.Lock = threading.Lock()
+        self._pending_events: list[dict] = []
+        self._pending_lock: threading.Lock = threading.Lock()
+
+    @property
+    def port(self) -> int:
+        """Cổng HTTP thực tế đang sử dụng."""
+        return self._port
 
     def set_client(self, client: ChatClient) -> None:
         """Gán ChatClient sau khi khởi tạo.
@@ -72,6 +79,41 @@ class HttpUI:
         """
         self._client = client
 
+    def bind_available_port(self, max_attempts: int = 50) -> int:
+        """Tự động kiểm tra và bind ngay vào một cổng TCP còn rảnh để giữ chỗ.
+
+        Args:
+            max_attempts: Số lượng cổng tối đa cần quét tiếp theo.
+
+        Returns:
+            Cổng TCP đã bind thành công.
+        """
+        if self._sock is not None:
+            return self._port
+
+        original_port = self._port
+        for p in range(self._port, self._port + max_attempts):
+            # 1. Thử kết nối TCP để xem có ai đang lắng nghe không
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.15)
+                if probe.connect_ex(("127.0.0.1", p)) == 0:
+                    continue  # Đang có tiến trình khác sử dụng cổng p
+
+            # 2. Thử bind mà KHÔNG dùng SO_REUSEADDR để đảm bảo độc quyền cổng
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind(("127.0.0.1", p))
+                self._sock = sock
+                self._port = p
+                return self._port
+            except OSError:
+                sock.close()
+                continue
+
+        raise RuntimeError(
+            f"Không tìm thấy cổng TCP rảnh trong khoảng {original_port} - {original_port + max_attempts}"
+        )
+
     # ─────────────────────── Start ───────────────────────
 
     def start(self) -> None:
@@ -79,9 +121,9 @@ class HttpUI:
 
         Chạy blocking – nên gọi trong thread riêng.
         """
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("127.0.0.1", self._port))
+        if self._sock is None:
+            self.bind_available_port()
+
         self._sock.listen(16)
         self._sock.settimeout(1.0)
         self._running = True
@@ -164,15 +206,15 @@ class HttpUI:
             # ── Routing ──
             if method == "GET" and path == "/":
                 self._serve_static(client_socket, "index.html")
-            elif method == "GET" and path == "/events":
+            elif method == "GET" and path in ("/events", "/api/events"):
                 self._handle_sse(client_socket)
                 return  # SSE keeps the connection open
             elif method == "GET" and path.startswith("/static/"):
                 filename: str = path[len("/static/"):]
                 self._serve_static(client_socket, filename)
-            elif method == "GET" and path == "/api/status":
+            elif method == "GET" and path in ("/api/status", "/status"):
                 self._handle_status(client_socket)
-            elif method == "GET" and path == "/api/progress":
+            elif method == "GET" and path in ("/api/progress", "/progress"):
                 self._handle_progress(client_socket)
             elif method == "POST" and path == "/api/login":
                 body = self._read_text_body(client_socket, body_prefix, content_length)
@@ -188,6 +230,11 @@ class HttpUI:
                     self._handle_file_stream_upload(
                         client_socket, query_params, headers, body_prefix, content_length
                     )
+            elif method == "POST" and path in ("/api/logout", "/logout"):
+                if self._client:
+                    self._client.disconnect()
+                self._send_json_response(client_socket, 200, {"status": "ok"})
+                client_socket.close()
             else:
                 self._send_response(client_socket, 404, "text/plain", b"Not Found")
                 client_socket.close()
@@ -261,6 +308,13 @@ class HttpUI:
             with self._sse_lock:
                 self._sse_clients.append(client_socket)
             logger.debug("SSE client kết nối")
+
+            # Xả các event tồn đọng (pending) nếu có
+            with self._pending_lock:
+                pending = list(self._pending_events)
+                self._pending_events.clear()
+            for evt in pending:
+                self._broadcast_sse(evt)
         except OSError:
             try:
                 client_socket.close()
@@ -276,7 +330,13 @@ class HttpUI:
 
             try:
                 event: dict = self._client.event_queue.get(timeout=0.5)
-                self._broadcast_sse(event)
+                with self._sse_lock:
+                    has_clients = bool(self._sse_clients)
+                if not has_clients:
+                    with self._pending_lock:
+                        self._pending_events.append(event)
+                else:
+                    self._broadcast_sse(event)
             except queue.Empty:
                 # Gửi heartbeat SSE để giữ kết nối
                 self._broadcast_sse_raw(": heartbeat\n\n")
@@ -325,19 +385,35 @@ class HttpUI:
         """
         try:
             data: dict = json.loads(body)
-            username: str = data.get("username", "")
-            password: str = data.get("password", "")
+            username: str = str(data.get("username", "")).strip().lower()
+            password: str = str(data.get("password", "")).strip()
+
+            if not username or not password:
+                self._send_json_response(
+                    client_socket, 400, {"status": "error", "message": "Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu"}
+                )
+                client_socket.close()
+                return
 
             if self._client is not None:
-                self._client.connect(username, password)
-                resp: dict = {
-                    "status": "connecting",
-                    "message": f"Đang kết nối với tư cách {username}...",
-                }
+                is_ok = self._client.connect(username, password)
+                if is_ok:
+                    resp: dict = {
+                        "status": "ok",
+                        "username": username,
+                        "message": f"Chào mừng {username}! Đăng nhập thành công.",
+                    }
+                    self._send_json_response(client_socket, 200, resp)
+                else:
+                    resp = {
+                        "status": "error",
+                        "message": "Tên đăng nhập hoặc mật khẩu không chính xác hoặc không kết nối được tới server.",
+                    }
+                    self._send_json_response(client_socket, 401, resp)
             else:
-                resp = {"status": "error", "message": "Client chưa sẵn sàng"}
-
-            self._send_json_response(client_socket, 200, resp)
+                self._send_json_response(
+                    client_socket, 500, {"status": "error", "message": "Client chưa sẵn sàng"}
+                )
         except json.JSONDecodeError:
             self._send_json_response(
                 client_socket, 400, {"status": "error", "message": "JSON không hợp lệ"}

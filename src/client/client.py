@@ -68,6 +68,7 @@ class ChatClient:
         self._running: bool = False
         self._username: Optional[str] = None
         self._authenticated: bool = False
+        self._auth_event: threading.Event = threading.Event()
 
         # Hàng đợi sự kiện cho UI
         self.event_queue: queue.Queue[dict] = queue.Queue()
@@ -77,35 +78,37 @@ class ChatClient:
 
     # ─────────────────────── Kết nối ───────────────────────
 
-    def connect(self, username: str, password: str) -> bool:
+    def connect(self, username: str, password: str, timeout: float = 3.5) -> bool:
         """Kích hoạt handshake, gửi AUTH_REQ và duy trì event loop.
 
         Args:
             username: Tên đăng nhập.
             password: Mật khẩu (sẽ được hash SHA-256).
+            timeout: Thời gian tối đa chờ phản hồi xác thực từ server (giây).
 
         Returns:
-            ``True`` khi đã bắt đầu kết nối (kết quả auth đến qua event).
+            ``True`` khi xác thực thành công từ server, ``False`` nếu thất bại/timeout.
         """
+        self._auth_event.clear()
         self._username = username
         self._running = True
 
         # Bắt đầu handshake
         self._connection.handle_handshake()
 
-        # Chạy network poll trong thread riêng
+        # Chạy network poll trong thread riêng nếu chưa chạy
         poll_thread = threading.Thread(target=self.poll_network, daemon=True)
         poll_thread.start()
 
-        # Chạy tick loop
+        # Chạy tick loop nếu chưa chạy
         tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         tick_thread.start()
 
-        # Đợi handshake hoàn tất (tối đa 5 giây)
-        if not self._connection.handshake_complete.wait(timeout=5.0):
-            logger.warning("Handshake timeout – gửi auth không mã hóa")
+        # Đợi handshake hoàn tất (tối đa 3 giây)
+        if not self._connection.handshake_complete.wait(timeout=3.0):
+            logger.warning("Handshake timeout – thử gửi auth")
 
-        # Gửi AUTH
+        # Gửi AUTH qua Stream 0
         password_hash: str = hashlib.sha256(password.encode("utf-8")).hexdigest()
         auth_msg: dict = {
             "type": "AUTH",
@@ -113,7 +116,10 @@ class ChatClient:
             "password_hash": password_hash,
         }
         self._send_json(auth_msg)
-        return True
+
+        # Chờ phản hồi AUTH_RESP từ server
+        self._auth_event.wait(timeout=timeout)
+        return self._authenticated
 
     # ─────────────────────── Chat ───────────────────────
 
@@ -284,6 +290,7 @@ class ChatClient:
         # Xử lý AUTH_RESP
         if msg.get("type") == "AUTH_RESP":
             self._authenticated = msg.get("success", False)
+            self._auth_event.set()
             if self._authenticated:
                 logger.info("Đăng nhập thành công: %s", self._username)
             else:

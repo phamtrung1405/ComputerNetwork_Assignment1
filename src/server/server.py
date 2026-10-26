@@ -142,7 +142,10 @@ class ChatServer:
 
         # Cập nhật user mapping nếu đã xác thực
         if session.authenticated and session.username:
+            was_in = session.username in self._user_to_conn
             self._user_to_conn[session.username] = conn_id
+            if not was_in:
+                self._broadcast_user_list()
 
     def _create_session(self, conn_id: int, addr: tuple[str, int]) -> None:
         """Tạo một Session mới cho client.
@@ -256,11 +259,26 @@ class ChatServer:
                     if session.connection.closed:
                         closed_ids.append(conn_id)
 
+                need_userlist_update = False
                 for cid in closed_ids:
                     s = self._sessions.pop(cid, None)
                     if s and s.username:
                         self._user_to_conn.pop(s.username, None)
                         logger.info("Session đóng: %s (conn_id=%d)", s.username, cid)
+                        need_userlist_update = True
+
+                if need_userlist_update:
+                    self._broadcast_user_list()
+
+    def _broadcast_user_list(self) -> None:
+        """Gửi danh sách các người dùng trực tuyến đến tất cả client."""
+        with self._sessions_lock:
+            users = sorted(list(self._user_to_conn.keys()))
+        msg = {
+            "type": "USER_LIST",
+            "users": users,
+        }
+        self._broadcast("server", msg, exclude=None)
 
     # ─────────────────────── Cleanup ───────────────────────
 

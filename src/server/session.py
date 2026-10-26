@@ -153,18 +153,23 @@ class Session:
 
         target: str = msg.get("target", "all")
         text: str = msg.get("text", "")
+        is_private: bool = target not in ("all", "", "phong_chung")
 
         chat_msg: dict = {
             "type": "MSG",
             "from": self.username,
+            "target": target,
             "text": text,
             "timestamp": __import__("time").time(),
+            "is_private": is_private,
         }
 
-        if target == "all":
+        if not is_private:
             self.route_broadcast(chat_msg)
         else:
             self.route_unicast(target, chat_msg)
+            # Gửi phản hồi lại cho chính người gửi để hiển thị tin nhắn riêng tư
+            self._send_app_message(chat_msg)
 
     def _process_file(self, msg: dict) -> None:
         """Xử lý thông báo bắt đầu truyền file.
@@ -186,12 +191,14 @@ class Session:
             "size": msg.get("size", 0),
             "sha256": msg.get("sha256", ""),
             "stream_id": msg.get("stream_id", 0),
+            "target": msg.get("target", "all"),
         }
         target: str = msg.get("target", "all")
-        if target == "all":
+        if target in ("all", "", "phong_chung"):
             self.route_broadcast(file_info)
         else:
             self.route_unicast(target, file_info)
+            self._send_app_message(file_info)
 
     def _process_file_data(self, msg: dict) -> None:
         """Chuyển tiếp dữ liệu file chunk.
@@ -200,7 +207,7 @@ class Session:
             msg: Dict chứa dữ liệu chunk file.
         """
         target: str = msg.get("target", "all")
-        if target == "all":
+        if target in ("all", "", "phong_chung"):
             self.route_broadcast(msg)
         else:
             self.route_unicast(target, msg)
@@ -208,7 +215,7 @@ class Session:
     # ─────────────────────── Routing ───────────────────────
 
     def route_broadcast(self, msg: dict) -> None:
-        """Chuyển tiếp tin nhắn đến tất cả Session đang active.
+        """Chuyển tiếp tin nhắn đến tất cả Session đang active (bao gồm cả người gửi).
 
         Args:
             msg: Dict message cần gửi.
@@ -217,7 +224,7 @@ class Session:
             self._broadcast_fn(
                 self.username if self.username else "",
                 msg,
-                self.username,
+                None,  # Không loại trừ người gửi để người gửi cũng nhận được tin
             )
 
     def route_unicast(self, target_username: str, msg: dict) -> None:

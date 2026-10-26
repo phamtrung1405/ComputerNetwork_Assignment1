@@ -174,61 +174,76 @@ def main() -> None:
     check_dependencies()
 
     print("=" * 65)
-    print("        STREAMCHAT — KHỞI CHẠY HỆ THỐNG TRÊN PORT 8080")
+    print("        STREAMCHAT — KHỞI CHẠY HỆ THỐNG PHÂN TÁN ĐA TIẾN TRÌNH")
     print("=" * 65)
 
-    # 2. Khởi chạy Server duy nhất (cung cấp cả Web UI, SSE và UDP)
-    print(f"\n[1/2] Đang khởi động Server tại cổng Web {args.http_port} & UDP {args.server_port}...")
+    # 2. Khởi chạy UDP Server trung tâm
+    print(f"\n[1/{args.clients + 1}] Đang khởi động Server UDP tại cổng {args.server_port}...")
     server_cmd = [
         sys.executable,
         "-u",
         str(RUN_SERVER_SCRIPT),
         "--port",
         str(args.server_port),
-        "--web-port",
-        str(args.http_port),
     ]
     server_proc = subprocess.Popen(server_cmd, cwd=str(PROJECT_ROOT))
     child_processes.append(server_proc)
 
-    # Chờ một chút để Server socket sẵn sàng
-    time.sleep(1.0)
+    # Chờ 0.8s để UDP Server socket sẵn sàng
+    time.sleep(0.8)
     if server_proc.poll() is not None:
-        print("[LỖI] Server khởi động thất bại!")
+        print("[LỖI] Server UDP khởi động thất bại!")
         sys.exit(1)
 
-    web_url = f"http://127.0.0.1:{args.http_port}"
+    # 3. Khởi chạy các tiến trình Client độc lập
+    start_port = args.http_port
+    client_urls: List[str] = []
 
-    # 3. Hiển thị thông tin hướng dẫn
+    print(f"\n[2/{args.clients + 1}] Đang khởi chạy {args.clients} tiến trình Client độc lập...")
+    for idx in range(args.clients):
+        client_port = start_port + idx
+        client_cmd = [
+            sys.executable,
+            "-u",
+            str(RUN_CLIENT_SCRIPT),
+            "--server-port",
+            str(args.server_port),
+            "--http-port",
+            str(client_port),
+            "--no-browser",  # Sẽ mở đồng loạt bên dưới
+        ]
+        c_proc = subprocess.Popen(client_cmd, cwd=str(PROJECT_ROOT))
+        child_processes.append(c_proc)
+        client_urls.append(f"http://127.0.0.1:{client_port}")
+        time.sleep(0.3)
+
+    # 4. Hiển thị thông tin hướng dẫn
     print("\n" + "=" * 65)
-    print("  HỆ THỐNG ĐÃ SẴN SÀNG HOẠT ĐỘNG TRÊN 1 PORT DUY NHẤT!")
+    print("  HỆ THỐNG PHÂN TÁN ĐÃ SẴN SÀNG HOẠT ĐỘNG (100% QUA UDP)!")
     print("=" * 65)
-    print(f"  * Dia chi Web UI & SSE:       {web_url}")
-    print(f"  * UDP Transport Port:          127.0.0.1:{args.server_port}")
-    print("  * Moi tab trinh duyet hoat dong nhu mot Client doc lap.")
-    print("  * Co the mo hang tram tab hoac tu cac may khac trong mang LAN:")
+    print(f"  * UDP Transport Engine: 127.0.0.1:{args.server_port}")
+    print(f"  * Danh sách {args.clients} Client Web UI tương ứng:")
     for idx in range(min(args.clients, len(SAMPLE_ACCOUNTS))):
         acc = SAMPLE_ACCOUNTS[idx]
-        print(f"    - Tab {idx + 1}: Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
+        curl = client_urls[idx]
+        print(f"    - Client {idx + 1} ({curl}): Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
     print("-" * 65)
-    print("  [TIP] Nhấn Ctrl + C để dừng Server an toàn.")
+    print("  [TIP] Nhấn Ctrl + C để dừng an toàn toàn bộ Server & Clients.")
     print("=" * 65 + "\n")
 
-    # 4. Tự động mở trình duyệt nếu không bật --no-browser
+    # 5. Tự động mở trình duyệt cho các Client
     if not args.no_browser:
         max_open = min(args.clients, 4)
-        print(f"[2/2] Đang tự động mở {max_open} tab trình duyệt tới {web_url}...")
+        print(f"Đang tự động mở {max_open} tab trình duyệt cho các Client...")
         for i in range(max_open):
-            webbrowser.open(web_url)
+            webbrowser.open(client_urls[i])
             time.sleep(0.4)
         if args.clients > 4:
-            print(f"[LƯU Ý] Vì số lượng client lớn ({args.clients}), hệ thống chỉ tự động mở {max_open} tab đầu tiên để tránh làm đơ trình duyệt. Các client còn lại có thể truy cập qua URL tương ứng.")
-
+            print(f"[LƯU Ý] Vì số lượng client lớn ({args.clients}), hệ thống chỉ tự động mở {max_open} tab đầu tiên. Các client còn lại truy cập qua URL tương ứng.")
 
     # 6. Giữ tiến trình cha hoạt động và giám sát các tiến trình con
     try:
         while True:
-            # Kiểm tra xem có tiến trình nào bị thoát bất ngờ không
             for proc in child_processes:
                 if proc.poll() is not None:
                     print("\n[CẢNH BÁO] Một tiến trình con đã dừng. Đang dọn dẹp hệ thống...")

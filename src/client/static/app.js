@@ -151,6 +151,10 @@ loginForm.addEventListener("submit", async (e) => {
     loginBtn.disabled = true;
     loginError.classList.add("hidden");
 
+    if (!eventSource) {
+        initSSE(username);
+    }
+
     try {
         const response = await fetch("/api/login", {
             method: "POST",
@@ -167,13 +171,18 @@ loginForm.addEventListener("submit", async (e) => {
 
         if (response.ok && data.status === "ok") {
             currentUsername = data.username || username;
-            initSSE(currentUsername);
             handleAuthSuccess(data);
         } else {
             showLoginError(data.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
+            loginBtn.querySelector(".btn-text").textContent = "Đăng nhập";
+            loginBtn.querySelector(".btn-spinner").classList.add("hidden");
+            loginBtn.disabled = false;
         }
     } catch (err) {
         showLoginError("Lỗi kết nối máy chủ: " + err.message);
+        loginBtn.querySelector(".btn-text").textContent = "Đăng nhập";
+        loginBtn.querySelector(".btn-spinner").classList.add("hidden");
+        loginBtn.disabled = false;
     }
 });
 
@@ -673,4 +682,19 @@ btnDisconnect.addEventListener("click", () => {
     `;
     onlineUsersDiv.innerHTML = '<p class="empty-state">Chưa có ai khác online</p>';
     onlineCountSpan.textContent = "0";
+
+    // Khởi tạo lại kết nối SSE chuẩn bị cho lần đăng nhập tiếp theo
+    setTimeout(() => initSSE(""), 300);
 });
+
+// ═══════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════
+
+// Tự động kết nối SSE ngay khi nạp trang để sẵn sàng nhận dữ liệu thời gian thực
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => initSSE(""));
+} else {
+    initSSE("");
+}
+

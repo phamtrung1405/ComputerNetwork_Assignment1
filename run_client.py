@@ -1,10 +1,12 @@
 """
 run_client.py
 ~~~~~~~~~~~~~
-Script khởi chạy máy khách với giao diện web.
+Script mở giao diện người dùng Client trên trình duyệt web.
+Trong kiến trúc Client-Server WebSocket trên port 8080, tất cả client
+truy cập cùng địa chỉ http://<server_ip>:8080 để đăng nhập tài khoản độc lập.
 
 Sử dụng:
-    python run_client.py [--server-ip IP] [--server-port PORT] [--http-port PORT]
+    python run_client.py [--server-ip IP] [--http-port 8080] [--no-browser]
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
-import threading
+import webbrowser
 
 # Thêm thư mục src vào sys.path để import các module
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
@@ -27,59 +29,46 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 from common.constants import (
     DEFAULT_SERVER_HOST,
-    DEFAULT_SERVER_PORT,
     DEFAULT_HTTP_PORT,
 )
-from client.client import ChatClient
-from client.http_ui import HttpUI
 
 
 def main() -> None:
     """Entry point cho client."""
-    parser = argparse.ArgumentParser(description="StreamChat Client")
+    parser = argparse.ArgumentParser(description="StreamChat Client Launcher")
     parser.add_argument(
         "--server-ip",
         type=str,
         default=DEFAULT_SERVER_HOST,
-        help=f"IP server (mặc định: {DEFAULT_SERVER_HOST})",
-    )
-    parser.add_argument(
-        "--server-port",
-        type=int,
-        default=DEFAULT_SERVER_PORT,
-        help=f"Cổng UDP server (mặc định: {DEFAULT_SERVER_PORT})",
+        help=f"IP máy chủ StreamChat (mặc định: {DEFAULT_SERVER_HOST})",
     )
     parser.add_argument(
         "--http-port",
         type=int,
         default=DEFAULT_HTTP_PORT,
-        help=f"Cổng HTTP cho giao diện web (mặc định: {DEFAULT_HTTP_PORT})",
+        help=f"Cổng Web UI và WebSocket (mặc định: {DEFAULT_HTTP_PORT})",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Không tự động mở trình duyệt web",
     )
     args = parser.parse_args()
 
-    print("===========================================")
-    print("  StreamChat Client")
-    print(f"  Server: {args.server_ip}:{args.server_port}")
-    print(f"  Web UI: http://127.0.0.1:{args.http_port}")
-    print("===========================================")
+    url = f"http://{args.server_ip}:{args.http_port}"
+    print("===============================================================")
+    print("                    STREAMCHAT CLIENT")
+    print("===============================================================")
+    print(f"  * Dia chi ket noi Web UI & WebSocket: {url}")
+    print("  * Ban co the mo nhieu tab trinh duyet tren cung dia chi nay")
+    print("    de dang nhap dong thoi nhieu tai khoan khac nhau.")
+    print("===============================================================")
 
-    # Tạo ChatClient (chưa connect – đợi user đăng nhập qua web)
-    client = ChatClient(
-        server_ip=args.server_ip,
-        server_port=args.server_port,
-    )
-
-    # Tạo HTTP UI server
-    http_ui = HttpUI(port=args.http_port, client=client)
-
-    # Chạy HTTP UI (blocking)
-    try:
-        http_ui.start()
-    except KeyboardInterrupt:
-        print("\nClient đã dừng.")
-        http_ui.stop()
-        client.disconnect()
-        sys.exit(0)
+    if not args.no_browser:
+        print(f"\nDang mo trinh duyet toi {url}...")
+        webbrowser.open(url)
+    else:
+        print(f"\nVui long mo trinh duyet va truy cap: {url}")
 
 
 if __name__ == "__main__":

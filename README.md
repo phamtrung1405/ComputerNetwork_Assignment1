@@ -119,28 +119,15 @@ python run_server.py
 
 ---
 
-#### Bước 2: Khởi động Client 1 cho Alice (Terminal 2)
+#### Bước 2: Truy cập Web UI & WebSocket trên cổng 8080 (Mở các Client)
 
-Chạy client 1 với cổng HTTP mặc định là `8080`:
+Hệ thống hoạt động theo kiến trúc Client-Server chuẩn: chỉ cần **1 địa chỉ duy nhất** `http://127.0.0.1:8080` (hoặc IP máy chủ trong mạng LAN). Mỗi tab trình duyệt tạo một kết nối WebSocket độc lập, cho phép mở hàng trăm tài khoản khác nhau cùng lúc.
 
-```bash
-python run_client.py --http-port 8080
-```
+- Mở tab trình duyệt 1: [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập tài khoản `alice` / `password123`.
+- Mở tab trình duyệt 2 (hoặc từ máy khác trong LAN): [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập tài khoản `bob` / `secret456`.
+- Mở tab trình duyệt 3: [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập `charlie`, `demo`, hoặc `user1`..`user50`.
 
-- Mở trình duyệt web và truy cập vào: [http://127.0.0.1:8080](http://127.0.0.1:8080)
-- Màn hình đăng nhập sẽ hiển thị.
-
----
-
-#### Bước 3: Khởi động Client 2 cho Bob (Terminal 3)
-
-Chạy client 2 với cổng HTTP khác để tránh xung đột cổng (ví dụ: `8081`):
-
-```bash
-python run_client.py --http-port 8081
-```
-
-- Mở tab trình duyệt mới (hoặc trình duyệt ẩn danh) truy cập vào: [http://127.0.0.1:8081](http://127.0.0.1:8081)
+*(Hoặc dùng lệnh `python run_client.py` để tự động mở thêm tab trình duyệt).*
 
 ---
 
@@ -160,9 +147,9 @@ Hệ thống tích hợp sẵn các tài khoản thử nghiệm sau:
 ## 6. Hướng dẫn sử dụng & Kiểm thử tính năng
 
 ### 6.1. Đăng nhập
-- Tại trang `http://127.0.0.1:8080`: Nhập username `alice` và mật khẩu `password123` rồi bấm **Đăng nhập**.
-- Tại trang `http://127.0.0.1:8081`: Nhập username `bob` và mật khẩu `secret456` rồi bấm **Đăng nhập**.
-- Client sẽ tự động thực hiện quá trình bắt tay UDP, tạo khóa chia sẻ, mã hóa thông tin xác thực và kết nối vào phòng chat.
+- Tại Tab 1 `http://127.0.0.1:8080`: Nhập username `alice` và mật khẩu `password123` rồi bấm **Đăng nhập**.
+- Tại Tab 2 `http://127.0.0.1:8080`: Nhập username `bob` và mật khẩu `secret456` rồi bấm **Đăng nhập**.
+- Trình duyệt sẽ tự động kết nối WebSocket (`ws://127.0.0.1:8080/ws`), xác thực tức thời qua cơ sở dữ liệu SQLite và hiển thị trạng thái trực tuyến của các người dùng trên thanh sidebar.
 
 ### 6.2. Chat phòng chung (Broadcast)
 - Nhập bất kỳ nội dung nào vào ô chat bên dưới và nhấn **Enter** hoặc bấm nút **Gửi**.

@@ -134,7 +134,7 @@ def main() -> None:
         "--clients",
         type=int,
         default=2,
-        help="Số lượng Client cần khởi chạy (mặc định: 2 cho Alice và Bob)",
+        help="Số lượng tab trình duyệt cần mở để kiểm thử (mặc định: 2 cho Alice và Bob)",
     )
     parser.add_argument(
         "--server-port",
@@ -143,10 +143,10 @@ def main() -> None:
         help="Cổng UDP của Server (mặc định: 9000)",
     )
     parser.add_argument(
-        "--start-http-port",
+        "--http-port",
         type=int,
         default=8080,
-        help="Cổng HTTP bắt đầu cho Client Web UI (mặc định: 8080)",
+        help="Cổng Web UI và WebSocket duy nhất (mặc định: 8080)",
     )
     parser.add_argument(
         "--no-browser",
@@ -174,17 +174,19 @@ def main() -> None:
     check_dependencies()
 
     print("=" * 65)
-    print("        STREAMCHAT — KHỞI CHẠY TOÀN BỘ HỆ THỐNG")
+    print("        STREAMCHAT — KHỞI CHẠY HỆ THỐNG TRÊN PORT 8080")
     print("=" * 65)
 
-    # 2. Khởi chạy Server
-    print(f"\n[1/3] Đang khởi động Server UDP tại cổng {args.server_port}...")
+    # 2. Khởi chạy Server duy nhất (cung cấp cả Web UI, WebSocket và UDP)
+    print(f"\n[1/2] Đang khởi động Server tại cổng Web {args.http_port} & UDP {args.server_port}...")
     server_cmd = [
         sys.executable,
         "-u",
         str(RUN_SERVER_SCRIPT),
         "--port",
         str(args.server_port),
+        "--web-port",
+        str(args.http_port),
     ]
     server_proc = subprocess.Popen(server_cmd, cwd=str(PROJECT_ROOT))
     child_processes.append(server_proc)
@@ -195,54 +197,30 @@ def main() -> None:
         print("[LỖI] Server khởi động thất bại!")
         sys.exit(1)
 
-    # 3. Khởi chạy các Client
-    client_urls: List[str] = []
-    print(f"\n[2/3] Đang khởi động {args.clients} Client Web UI...")
-    for i in range(args.clients):
-        http_port = args.start_http_port + i
-        client_cmd = [
-            sys.executable,
-            "-u",
-            str(RUN_CLIENT_SCRIPT),
-            "--server-port",
-            str(args.server_port),
-            "--http-port",
-            str(http_port),
-        ]
-        client_proc = subprocess.Popen(client_cmd, cwd=str(PROJECT_ROOT))
-        child_processes.append(client_proc)
-        client_urls.append(f"http://127.0.0.1:{http_port}")
-        time.sleep(0.5)
+    web_url = f"http://127.0.0.1:{args.http_port}"
 
-    # 4. Hiển thị thông tin hướng dẫn
+    # 3. Hiển thị thông tin hướng dẫn
     print("\n" + "=" * 65)
-    print("  HỆ THỐNG ĐÃ SẴN SÀNG HOẠT ĐỘNG!")
+    print("  HỆ THỐNG ĐÃ SẴN SÀNG HOẠT ĐỘNG TRÊN 1 PORT DUY NHẤT!")
     print("=" * 65)
-    print(f"  * Server UDP:        127.0.0.1:{args.server_port}")
-    if len(client_urls) <= 5:
-        for idx, url in enumerate(client_urls):
-            acc = SAMPLE_ACCOUNTS[idx]
-            print(f"  * Client {idx + 1} Web UI:    {url}")
-            print(f"    -> Đăng nhập mẫu:  Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
-    else:
-        for idx in range(3):
-            url = client_urls[idx]
-            acc = SAMPLE_ACCOUNTS[idx]
-            print(f"  * Client {idx + 1} Web UI:    {url}")
-            print(f"    -> Đăng nhập mẫu:  Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
-        print(f"  ... và {len(client_urls) - 3} Client khác đang chạy từ cổng {args.start_http_port + 3} đến {args.start_http_port + len(client_urls) - 1}")
-        print("  -> Tài khoản mẫu tương ứng: user5, user6, ... (Password: password123)")
+    print(f"  * Dia chi Web UI & WebSocket: {web_url}")
+    print(f"  * UDP Transport Port:          127.0.0.1:{args.server_port}")
+    print("  * Moi tab trinh duyet hoat dong nhu mot Client doc lap.")
+    print("  * Co the mo hang tram tab hoac tu cac may khac trong mang LAN:")
+    for idx in range(min(args.clients, len(SAMPLE_ACCOUNTS))):
+        acc = SAMPLE_ACCOUNTS[idx]
+        print(f"    - Tab {idx + 1}: Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
     print("-" * 65)
-    print("  [TIP] Nhấn Ctrl + C để dừng đồng thời Server và toàn bộ Client.")
+    print("  [TIP] Nhấn Ctrl + C để dừng Server an toàn.")
     print("=" * 65 + "\n")
 
-    # 5. Tự động mở trình duyệt nếu không bật --no-browser
+    # 4. Tự động mở trình duyệt nếu không bật --no-browser
     if not args.no_browser:
-        max_open = 2 if args.clients > 4 else len(client_urls)
-        print(f"[3/3] Đang mở {max_open} tab trình duyệt Web UI...")
+        max_open = min(args.clients, 4)
+        print(f"[2/2] Đang tự động mở {max_open} tab trình duyệt tới {web_url}...")
         for i in range(max_open):
-            webbrowser.open(client_urls[i])
-            time.sleep(0.5)
+            webbrowser.open(web_url)
+            time.sleep(0.4)
         if args.clients > 4:
             print(f"[LƯU Ý] Vì số lượng client lớn ({args.clients}), hệ thống chỉ tự động mở {max_open} tab đầu tiên để tránh làm đơ trình duyệt. Các client còn lại có thể truy cập qua URL tương ứng.")
 

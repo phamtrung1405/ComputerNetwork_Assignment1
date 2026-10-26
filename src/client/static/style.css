@@ -930,6 +930,166 @@ html, body {
     box-shadow: none !important;
 }
 
+/* ── Online Users List in Sidebar ── */
+.online-section {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 12px 14px;
+    max-height: 220px;
+}
+
+.sidebar-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.sidebar-section-header h3 {
+    margin-bottom: 0 !important;
+}
+
+.online-users-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    max-height: 160px;
+}
+
+.user-item {
+    width: 100%;
+    padding: 8px 10px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.user-item:hover {
+    background: var(--bg-tertiary);
+    transform: translateX(2px);
+}
+
+.user-item.active {
+    background: rgba(108, 99, 255, 0.15);
+    border-left: 3px solid var(--accent-primary);
+}
+
+.user-item-avatar {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--accent-gradient);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.user-item-info {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.user-item-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.user-item-status {
+    font-size: 10px;
+    color: var(--success);
+}
+
+/* ── Badges & Private Messages ── */
+.private-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.message.private-msg .message-bubble {
+    border-left: 3px solid #eab308;
+    background: rgba(234, 179, 8, 0.08);
+}
+
+/* ── File Download Card in Chat ── */
+.file-card-msg {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    margin-top: 6px;
+    box-shadow: var(--shadow-sm);
+}
+
+.file-card-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.file-card-details {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.file-card-name {
+    font-weight: 600;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-card-size {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.btn-download-file {
+    padding: 6px 12px;
+    background: var(--accent-gradient);
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.btn-download-file:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
     .sidebar {
@@ -946,3 +1106,4 @@ html, body {
         padding: 32px 24px;
     }
 }
+

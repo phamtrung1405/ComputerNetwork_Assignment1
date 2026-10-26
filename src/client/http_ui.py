@@ -463,7 +463,7 @@ class HttpUI:
                     f.write(body_prefix)
                 bytes_written = len(body_prefix)
                 while bytes_written < content_length:
-                    to_read = min(65536, content_length - bytes_written)
+                    to_read = min(131072, content_length - bytes_written)
                     chunk = client_socket.recv(to_read)
                     if not chunk:
                         break

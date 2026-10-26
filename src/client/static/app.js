@@ -541,12 +541,15 @@ function openFileDialog() {
     fileDialog.classList.remove("hidden");
     clearSelectedFile();
     if (fileTargetInput) fileTargetInput.value = activeTarget;
+    fileSendBtn.textContent = "Gửi Tệp";
     updateFileSendBtnState();
 }
 
 function closeFileDialog() {
     fileDialog.classList.add("hidden");
     clearSelectedFile();
+    fileSendBtn.textContent = "Gửi Tệp";
+    updateFileSendBtnState();
 }
 
 btnFile.addEventListener("click", openFileDialog);
@@ -596,43 +599,61 @@ fileDropZone.addEventListener("drop", (e) => {
     }
 });
 
-// Gửi file nhị phân lên server
-fileSendBtn.addEventListener("click", async () => {
+// Gửi file nhị phân lên server với thanh tiến trình và thông báo trực quan
+fileSendBtn.addEventListener("click", () => {
     if (!selectedFile) return;
 
     const target = fileTargetInput.value.trim().toLowerCase() || "all";
     const fileToSend = selectedFile;
     fileSendBtn.disabled = true;
-    const originalText = fileSendBtn.textContent;
-    fileSendBtn.textContent = "Đang gửi...";
+    const originalText = "Gửi Tệp";
+    fileSendBtn.textContent = "Đang gửi... 0%";
 
-    try {
-        const url = `/api/file?target=${encodeURIComponent(target)}&filename=${encodeURIComponent(fileToSend.name)}&sender=${encodeURIComponent(currentUsername)}`;
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/octet-stream",
-                "X-Filename": encodeURIComponent(fileToSend.name),
-                "X-Target": encodeURIComponent(target),
-                "X-Sender": encodeURIComponent(currentUsername),
-            },
-            body: fileToSend,
-        });
+    const url = `/api/file?target=${encodeURIComponent(target)}&filename=${encodeURIComponent(fileToSend.name)}&sender=${encodeURIComponent(currentUsername)}`;
 
-        const result = await response.json();
-        if (result.status === "ok") {
-            addSystemMessage(`📤 Đã gửi thành công tệp tin ${fileToSend.name}!`);
-            closeFileDialog();
-        } else {
-            addSystemMessage("⚠️ Không thể gửi file: " + result.message);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-Filename", encodeURIComponent(fileToSend.name));
+    xhr.setRequestHeader("X-Target", encodeURIComponent(target));
+    xhr.setRequestHeader("X-Sender", encodeURIComponent(currentUsername));
+
+    // Bắt tiến trình upload để hiển thị % trực tiếp lên nút
+    xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) {
+            const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
+            fileSendBtn.textContent = `Đang gửi... ${percent}%`;
+        }
+    };
+
+    xhr.onload = () => {
+        try {
+            const result = JSON.parse(xhr.responseText || "{}");
+            if (xhr.status >= 200 && xhr.status < 300 && result.status === "ok") {
+                fileSendBtn.textContent = "✅ Đã tải lên thành công!";
+                addSystemMessage(`📤 Đã gửi thành công tệp tin ${fileToSend.name}!`);
+                setTimeout(() => {
+                    closeFileDialog();
+                }, 1200);
+            } else {
+                addSystemMessage("⚠️ Không thể gửi file: " + (result.message || "Lỗi máy chủ"));
+                fileSendBtn.disabled = false;
+                fileSendBtn.textContent = originalText;
+            }
+        } catch (err) {
+            addSystemMessage("⚠️ Lỗi phản hồi upload: " + err.message);
             fileSendBtn.disabled = false;
             fileSendBtn.textContent = originalText;
         }
-    } catch (err) {
-        addSystemMessage("⚠️ Lỗi upload file: " + err.message);
+    };
+
+    xhr.onerror = () => {
+        addSystemMessage("⚠️ Lỗi kết nối mạng khi upload file.");
         fileSendBtn.disabled = false;
         fileSendBtn.textContent = originalText;
-    }
+    };
+
+    xhr.send(fileToSend);
 });
 
 // ═══════════════════════════════════════════════

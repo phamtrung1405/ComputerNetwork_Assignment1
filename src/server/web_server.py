@@ -249,6 +249,12 @@ class UnifiedChatServer:
         """Xử lý phân loại request: WebSocket Handshake hoặc HTTP Request."""
         try:
             client_sock.settimeout(30.0)
+            try:
+                client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
+                client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
+            except OSError:
+                pass
             raw_data = bytearray()
             # Đọc đến khi thấy ranh giới headers \r\n\r\n
             while b"\r\n\r\n" not in raw_data:
@@ -621,10 +627,11 @@ class UnifiedChatServer:
 
         # Đọc toàn bộ body file nhị phân
         with open(dest_path, "wb") as f:
-            f.write(body_prefix)
+            if body_prefix:
+                f.write(body_prefix)
             bytes_received = len(body_prefix)
             while bytes_received < content_length:
-                chunk_size = min(65536, content_length - bytes_received)
+                chunk_size = min(131072, content_length - bytes_received)
                 chunk = sock.recv(chunk_size)
                 if not chunk:
                     break

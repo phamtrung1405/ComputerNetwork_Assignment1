@@ -213,9 +213,9 @@ class ChatClient:
                     if stream.stream_id in self._file_transfers:
                         self._file_transfers[stream.stream_id]["sent"] += len(chunk)
 
-                    # Rate limiting đơn giản
+                    # Rate limiting đơn giản: kiểm tra can_send với độ trễ thấp
                     while not self._connection.reliability.can_send():
-                        time.sleep(0.01)
+                        time.sleep(0.001)
 
             if stream.stream_id in self._file_transfers:
                 self._file_transfers[stream.stream_id]["status"] = "completed"

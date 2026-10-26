@@ -8,11 +8,17 @@ echo ========================================================
 cd /d "%~dp0"
 
 set "PY_CMD="
-where py >nul 2>nul
-if %errorlevel%==0 (
-    set "PY_CMD=py -3"
+if exist "%LocalAppData%\Programs\Python\Python311\python.exe" (
+    set "PY_CMD="%LocalAppData%\Programs\Python\Python311\python.exe""
+) else if exist "%LocalAppData%\Programs\Python\Python310\python.exe" (
+    set "PY_CMD="%LocalAppData%\Programs\Python\Python310\python.exe""
 ) else (
-    set "PY_CMD=python"
+    where python >nul 2>nul
+    if %errorlevel%==0 (
+        set "PY_CMD=python"
+    ) else (
+        set "PY_CMD=py -3.11"
+    )
 )
 
 set "VENV_PYTHON="

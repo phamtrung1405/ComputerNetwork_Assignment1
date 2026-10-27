@@ -61,23 +61,17 @@ HEADER_FORMAT: str = "!BIBHIHHI"
 #  I = offset   (4)
 #  Tổng = 1+4+1+2+4+2+2+4 = 20 – ta sẽ dùng format chuẩn hơn bên dưới
 
-# Dùng format rõ ràng: big-endian
-# B  msg_type      1
-# I  conn_id       4
-# I  seq_num       4
-# B  flags         1
-# H  stream_id     2
-# I  offset        4
-# H  payload_len   2
-# 4 bytes padding → tổng 22
-HEADER_STRUCT_FMT: str = "!BIIBHIH2s"
-# 1 + 4 + 4 + 1 + 2 + 4 + 2 + 2 = 20 → thêm 2 bytes reserved = 22 ✓
+# Format chuẩn: big-endian  B=uint8  I=uint32  H=uint16
+# msg_type(B) + conn_id(I) + seq_num(I) + flags(B) + stream_id(H) + offset(I) + payload_len(H) + reserved(I)
+# 1 + 4 + 4 + 1 + 2 + 4 + 2 + 4 = 22 bytes
+HEADER_STRUCT_FMT: str = "!BIIBHIHI"
 
 # ──────────────────────────────────────────────────
 # Kích thước & MTU
 # ──────────────────────────────────────────────────
 MAX_UDP_PAYLOAD: int = 1400     # bytes – giới hạn an toàn để tránh phân mảnh IP
-MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE  # 1378 bytes
+# Safe Application Payload: 1400 - 22 (Header) - 16 (AES-GCM Tag) = 1362 bytes (ADR-007)
+MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE - 16  # 1362 bytes
 RECV_BUFFER_SIZE: int = 65535   # Bộ đệm nhận tối đa
 
 # ──────────────────────────────────────────────────

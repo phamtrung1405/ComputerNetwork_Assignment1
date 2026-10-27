@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Ứng dụng cộng tác client-server phân tán dạng streaming">
+    <meta name="description" content="Distributed streaming client-server collaboration application">
     <title>StreamChat — Distributed Collaboration</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,7 +12,6 @@
 </head>
 <body>
     <!-- ════════════════ LOGIN SCREEN ════════════════ -->
-
 
     <div id="login-screen" class="screen active">
         <div class="login-container">
@@ -36,27 +35,25 @@
             </div>
             <form id="login-form" autocomplete="off">
                 <div class="input-group">
-                    <label for="login-username">Tên đăng nhập</label>
+                    <label for="login-username">Username</label>
                     <input type="text" id="login-username" placeholder="alice, bob, charlie, demo" required>
                 </div>
                 <div class="input-group">
-                    <label for="login-password">Mật khẩu</label>
-                    <input type="password" id="login-password" placeholder="Nhập mật khẩu" required>
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" placeholder="Enter password" required>
                 </div>
                 <button type="submit" id="login-btn" class="btn-primary">
-                    <span class="btn-text">Đăng nhập</span>
+                    <span class="btn-text">Login</span>
                     <span class="btn-spinner hidden"></span>
                 </button>
                 <p id="login-error" class="error-text hidden"></p>
                 <div class="login-hint">
-                    <p>Tài khoản demo: <strong>demo / demo</strong></p>
+                    <p>Demo accounts: <strong>demo / demo</strong></p>
                 </div>
             </form>
         </div>
     </div>
 
-
-    
     <!-- ════════════════ CHAT SCREEN ════════════════ -->
     <div id="chat-screen" class="screen">
         <div class="chat-layout">
@@ -66,31 +63,31 @@
                     <div class="user-avatar" id="user-avatar">?</div>
                     <div class="user-info">
                         <span id="display-username" class="username-text">—</span>
-                        <span class="status-badge online">Trực tuyến</span>
+                        <span class="status-badge online">Online</span>
                     </div>
                 </div>
                 <nav class="sidebar-nav">
                     <button class="nav-item active" data-target="all" id="nav-all">
                         <span class="nav-icon">💬</span>
-                        <span class="nav-label">Phòng chung</span>
+                        <span class="nav-label">General Room</span>
                     </button>
                 </nav>
                 <div class="sidebar-section online-section">
                     <div class="sidebar-section-header">
-                        <h3>Người dùng online (<span id="online-count">0</span>)</h3>
+                        <h3>Online Users (<span id="online-count">0</span>)</h3>
                     </div>
                     <div id="online-users" class="online-users-list">
-                        <p class="empty-state">Chưa có ai khác online</p>
+                        <p class="empty-state">No other users online</p>
                     </div>
                 </div>
                 <div class="sidebar-section">
-                    <h3>Truyền File</h3>
+                    <h3>File Transfers</h3>
                     <div id="file-transfers" class="transfer-list">
-                        <p class="empty-state">Chưa có file nào</p>
+                        <p class="empty-state">No files yet</p>
                     </div>
                 </div>
                 <div class="sidebar-footer">
-                    <button id="btn-disconnect" class="btn-danger-small">Ngắt kết nối</button>
+                    <button id="btn-disconnect" class="btn-danger-small">Disconnect</button>
                 </div>
             </aside>
 
@@ -98,11 +95,11 @@
             <main class="chat-main">
                 <header class="chat-header">
                     <div class="chat-header-info">
-                        <h2 id="chat-title">💬 Phòng chung</h2>
-                        <span id="connection-status" class="conn-status connected">● Đã kết nối</span>
+                        <h2 id="chat-title">💬 General Room</h2>
+                        <span id="connection-status" class="conn-status connected">● Connected</span>
                     </div>
                     <div class="chat-header-actions">
-                        <button id="btn-file" class="btn-icon" title="Gửi file">
+                        <button id="btn-file" class="btn-icon" title="Send file">
                             📎
                         </button>
                     </div>
@@ -111,15 +108,15 @@
                 <div id="messages-container" class="messages-container">
                     <div id="messages" class="messages">
                         <div class="system-message">
-                            <span>Chào mừng đến StreamChat! Bạn đang ở phòng chat chung.</span>
+                            <span>Welcome to StreamChat! You are in the general chat room.</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="chat-input-area">
                     <div class="input-wrapper">
-                        <input type="text" id="msg-input" placeholder="Nhập tin nhắn... (@username để nhắn riêng)" autocomplete="off">
-                        <button id="btn-send" class="btn-send" title="Gửi">
+                        <input type="text" id="msg-input" placeholder="Type a message... (@username for private)" autocomplete="off">
+                        <button id="btn-send" class="btn-send" title="Send">
                             <svg viewBox="0 0 24 24" fill="none">
                                 <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                 <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -136,14 +133,14 @@
         <div class="dialog-backdrop"></div>
         <div class="dialog-content file-upload-dialog">
             <div class="dialog-header">
-                <h3>Gửi Tệp Tin</h3>
-                <button id="file-dialog-close" class="dialog-close-btn" title="Đóng">✕</button>
+                <h3>Send File</h3>
+                <button id="file-dialog-close" class="dialog-close-btn" title="Close">✕</button>
             </div>
 
-            <!-- Thẻ input file ẩn để kích hoạt bộ chọn file gốc của máy -->
+            <!-- Hidden file input to trigger native file chooser -->
             <input type="file" id="file-input" class="hidden-file-input">
 
-            <!-- Khu vực kéo thả / chọn file từ máy tính -->
+            <!-- Drag and drop / file selector area -->
             <div id="file-drop-zone" class="file-drop-zone">
                 <div class="drop-zone-icon">
                     <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -153,15 +150,15 @@
                     </svg>
                 </div>
                 <div class="drop-zone-text">
-                    <strong>Nhấn để chọn file từ máy</strong>
-                    <span class="drop-zone-hint">hoặc kéo thả file vào đây</span>
+                    <strong>Click to choose file from computer</strong>
+                    <span class="drop-zone-hint">or drag and drop file here</span>
                 </div>
                 <button type="button" id="btn-browse-file" class="btn-browse">
-                    📁 Chọn file từ máy
+                    📁 Choose file from computer
                 </button>
             </div>
 
-            <!-- Card hiển thị xem trước file đã chọn -->
+            <!-- File preview card for selected file -->
             <div id="file-preview-card" class="file-preview-card hidden">
                 <div class="file-preview-icon">
                     <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2">
@@ -173,26 +170,26 @@
                     <span id="file-preview-name" class="file-preview-name"></span>
                     <span id="file-preview-size" class="file-preview-size"></span>
                 </div>
-                <button type="button" id="file-remove-btn" class="btn-remove-file" title="Chọn file khác">✕</button>
+                <button type="button" id="file-remove-btn" class="btn-remove-file" title="Choose another file">✕</button>
             </div>
 
-            <!-- Người nhận -->
+            <!-- Recipient -->
             <div class="input-group">
-                <label for="file-target-input">Gửi đến</label>
-                <input type="text" id="file-target-input" placeholder="all (hoặc username)" value="all">
+                <label for="file-target-input">Send to</label>
+                <input type="text" id="file-target-input" placeholder="all (or username)" value="all">
             </div>
 
-            <!-- Tùy chọn nhập đường dẫn thủ công (mở rộng khi cần) -->
+            <!-- Manual path entry option (expand when needed) -->
             <div class="manual-path-toggle-wrapper">
-                <button type="button" id="toggle-manual-path" class="toggle-link">Hoặc nhập đường dẫn thủ công ▾</button>
+                <button type="button" id="toggle-manual-path" class="toggle-link">Or enter path manually ▾</button>
                 <div id="manual-path-container" class="manual-path-container hidden">
                     <input type="text" id="file-path-input" placeholder="C:\path\to\file.txt">
                 </div>
             </div>
 
             <div class="dialog-actions">
-                <button id="file-cancel-btn" class="btn-secondary">Hủy</button>
-                <button id="file-send-btn" class="btn-primary" disabled>Gửi Tệp</button>
+                <button id="file-cancel-btn" class="btn-secondary">Cancel</button>
+                <button id="file-send-btn" class="btn-primary" disabled>Send File</button>
             </div>
         </div>
     </div>

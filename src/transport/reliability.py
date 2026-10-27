@@ -1,8 +1,8 @@
 """
 transport/reliability.py
 ~~~~~~~~~~~~~~~~~~~~~~~~
-Cơ chế Sliding Window, RTT estimation (RFC 6298) và thuật toán
-tắc nghẽn CUBIC gộp chung trong một lớp duy nhất.
+Sliding Window mechanism, RTT estimation (RFC 6298), and CUBIC congestion
+control algorithm combined into a single manager class.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from common.constants import (
 
 @dataclass
 class _InFlightPacket:
-    """Thông tin một gói tin đang chờ ACK."""
+    """Metadata of an in-flight packet awaiting ACK."""
 
     packet_num: int
     raw_data: bytes
@@ -36,33 +36,33 @@ class _InFlightPacket:
 
 
 class ReliabilityManager:
-    """Quản lý Sliding Window, RTT và CUBIC congestion control."""
+    """Manages Sliding Window, RTT calculation, and CUBIC congestion control."""
 
     def __init__(self) -> None:
-        """Khởi tạo cửa sổ tắc nghẽn, bộ đệm chờ ACK và các biến RTT."""
-        # ── Congestion control ──
+        """Initialize congestion window, unacked buffer, and RTT variables."""
+        # -- Congestion control --
         self.cwnd: float = float(INITIAL_CWND)
         self.ssthresh: float = float(SSTHRESH_INITIAL)
         self._w_max: float = float(INITIAL_CWND)
         self._epoch_start: Optional[float] = None
         self._k: float = 0.0
 
-        # ── RTT estimation (RFC 6298) ──
+        # -- RTT estimation (RFC 6298) --
         self.srtt: Optional[float] = None
         self.rttvar: Optional[float] = None
         self.rto: float = INITIAL_RTO
 
-        # ── Bộ đệm gói tin chưa xác nhận ──
+        # -- Unacknowledged packet buffer --
         self._unacked: dict[int, _InFlightPacket] = {}
 
-    # ────────────────────────── Ghi nhận gửi ──────────────────────────
+    # -------------------------- Record Sent --------------------------
 
     def mark_sent(self, packet_num: int, packet_data: bytes) -> None:
-        """Lưu gói tin vừa gửi vào bộ đệm cùng timestamp.
+        """Store newly sent packet in the unacked buffer with its timestamp.
 
         Args:
-            packet_num: Số thứ tự gói tin.
-            packet_data: Dữ liệu thô đã đóng gói sẵn.
+            packet_num: Packet sequence number.
+            packet_data: Raw pre-packed packet bytes.
         """
         self._unacked[packet_num] = _InFlightPacket(
             packet_num=packet_num,
@@ -70,14 +70,14 @@ class ReliabilityManager:
             sent_time=time.monotonic(),
         )
 
-    # ────────────────────────── Xử lý SACK ──────────────────────────
+    # -------------------------- SACK Processing --------------------------
 
     def process_sack(self, ack_ranges: list[tuple[int, int]]) -> None:
-        """Xử lý dải Selective ACK, xóa các gói đã nhận.
+        """Process Selective ACK ranges and remove acknowledged packets.
 
         Args:
-            ack_ranges: Danh sách các khoảng ``(start, end)`` đã được bên
-                        nhận xác nhận (inclusive cả hai đầu).
+            ack_ranges: List of ``(start, end)`` ranges acknowledged by peer
+                        (inclusive on both ends).
         """
         for start, end in ack_ranges:
             for seq in range(start, end + 1):
@@ -87,13 +87,13 @@ class ReliabilityManager:
                     self.update_rtt(sample_rtt)
         self.update_cwnd(is_loss=False)
 
-    # ────────────────────────── Retransmit ──────────────────────────
+    # -------------------------- Retransmit --------------------------
 
     def get_retransmits(self) -> list[bytes]:
-        """Trả về danh sách raw data của các gói đã vượt RTO.
+        """Return raw data of all packets that have exceeded RTO timeout.
 
         Returns:
-            Danh sách bytes cần truyền lại.
+            List of bytes that need retransmission.
         """
         now: float = time.monotonic()
         retransmits: list[bytes] = []
@@ -106,13 +106,13 @@ class ReliabilityManager:
                 self.update_cwnd(is_loss=True)
         return retransmits
 
-    # ────────────────────────── RTT (RFC 6298) ──────────────────────
+    # -------------------------- RTT (RFC 6298) ----------------------
 
     def update_rtt(self, sample_rtt: float) -> None:
-        """Cập nhật SRTT và RTTVAR theo RFC 6298.
+        """Update SRTT and RTTVAR following RFC 6298.
 
         Args:
-            sample_rtt: RTT đo được (giây).
+            sample_rtt: Measured RTT sample (seconds).
         """
         alpha: float = 0.125
         beta: float = 0.25
@@ -129,13 +129,13 @@ class ReliabilityManager:
         self.rto = self.srtt + max(TICK_INTERVAL_CLOCK, 4.0 * self.rttvar)
         self.rto = max(MIN_RTO, min(self.rto, MAX_RTO))
 
-    # ────────────────────────── CUBIC cwnd ──────────────────────────
+    # -------------------------- CUBIC cwnd --------------------------
 
     def update_cwnd(self, is_loss: bool) -> None:
-        """Cập nhật cửa sổ tắc nghẽn theo CUBIC.
+        """Update congestion window according to CUBIC algorithm.
 
         Args:
-            is_loss: ``True`` nếu phát hiện mất gói, ``False`` khi ổn định.
+            is_loss: ``True`` if packet loss detected, ``False`` on successful ACK.
         """
         if is_loss:
             self._w_max = self.cwnd
@@ -166,21 +166,21 @@ class ReliabilityManager:
         w_cubic = min(w_cubic, float(MAX_CWND))
         self.cwnd = w_cubic
 
-    # ────────────────────────── Truy vấn ──────────────────────────
+    # -------------------------- Query --------------------------
 
     def can_send(self) -> bool:
-        """Kiểm tra xem có thể gửi thêm gói mới không (cwnd chưa đầy).
+        """Check if new packets can be transmitted (cwnd not full).
 
         Returns:
-            ``True`` nếu số gói đang bay < cwnd.
+            ``True`` if in-flight packets < cwnd.
         """
         return len(self._unacked) < int(self.cwnd)
 
     @property
     def in_flight(self) -> int:
-        """Số gói tin đang chờ ACK."""
+        """Count of packets currently awaiting ACK."""
         return len(self._unacked)
 
 
-# Hằng dùng nội bộ cho tính RTO
+# Internal constant for RTO calculation clock granularity
 TICK_INTERVAL_CLOCK: float = 0.05

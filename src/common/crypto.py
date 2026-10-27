@@ -1,10 +1,10 @@
 """
 common/crypto.py
 ~~~~~~~~~~~~~~~~
-Lớp bảo mật: trao đổi khóa X25519, dẫn xuất khóa phiên HKDF,
-mã hóa/giải mã AES-256-GCM.
+Security layer: X25519 key exchange, HKDF session key derivation,
+and AES-256-GCM authenticated encryption/decryption.
 
-Sử dụng thư viện ``cryptography`` (cài bằng ``pip install cryptography``).
+Uses the ``cryptography`` library (install via ``pip install cryptography``).
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from common.constants import AES_KEY_SIZE, GCM_NONCE_SIZE
 
 
 def generate_keypair() -> tuple[X25519PrivateKey, bytes]:
-    """Tạo cặp khóa X25519 cho quá trình Handshake.
+    """Generate an X25519 keypair for the Handshake process.
 
     Returns:
-        Tuple gồm đối tượng private key và public key dạng raw bytes (32 bytes).
+        Tuple containing the private key object and raw 32-byte public key.
     """
     private_key: X25519PrivateKey = X25519PrivateKey.generate()
     public_bytes: bytes = private_key.public_key().public_bytes(
@@ -38,14 +38,14 @@ def derive_shared_secret(
     private_key: X25519PrivateKey,
     peer_public_bytes: bytes,
 ) -> bytes:
-    """Dẫn xuất khóa phiên AES-256 bằng ECDH + HKDF.
+    """Derive a 256-bit AES session key using ECDH + HKDF.
 
     Args:
-        private_key: Khóa riêng X25519 của bên này.
-        peer_public_bytes: 32 bytes khóa công khai của bên kia.
+        private_key: Local X25519 private key.
+        peer_public_bytes: 32 bytes of peer's public key.
 
     Returns:
-        32 bytes khóa phiên AES-256 dùng chung.
+        32-byte shared symmetric AES-256 session key.
     """
     peer_public_key: X25519PublicKey = X25519PublicKey.from_public_bytes(
         peer_public_bytes
@@ -62,15 +62,15 @@ def derive_shared_secret(
 
 
 def encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes:
-    """Mã hóa payload bằng AES-256-GCM.
+    """Encrypt payload using AES-256-GCM.
 
     Args:
-        payload: Dữ liệu ứng dụng cần mã hóa.
-        session_key: Khóa phiên 32 bytes.
-        packet_num: Số thứ tự gói tin, dùng làm nonce (96-bit).
+        payload: Application payload to encrypt.
+        session_key: 32-byte symmetric session key.
+        packet_num: Packet sequence number used as 96-bit unique nonce.
 
     Returns:
-        bytes: ciphertext || tag (tag 16 bytes được nối bởi AESGCM).
+        bytes: ciphertext || tag (16-byte authentication tag appended by AESGCM).
     """
     nonce: bytes = packet_num.to_bytes(GCM_NONCE_SIZE, byteorder="big")
     aes_gcm = AESGCM(session_key)
@@ -79,18 +79,18 @@ def encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes:
 
 
 def decrypt(ciphertext: bytes, session_key: bytes, packet_num: int) -> bytes:
-    """Giải mã và xác thực tính toàn vẹn gói tin.
+    """Decrypt and verify packet integrity with AES-256-GCM.
 
     Args:
-        ciphertext: Dữ liệu đã mã hóa (bao gồm tag).
-        session_key: Khóa phiên 32 bytes.
-        packet_num: Số thứ tự gói tin dùng để khôi phục nonce.
+        ciphertext: Encrypted payload (including 16-byte authentication tag).
+        session_key: 32-byte symmetric session key.
+        packet_num: Packet sequence number used to reconstruct nonce.
 
     Returns:
-        bytes: Payload gốc sau giải mã.
+        bytes: Original decrypted plaintext payload.
 
     Raises:
-        cryptography.exceptions.InvalidTag: Khi xác thực thất bại.
+        cryptography.exceptions.InvalidTag: If authentication or integrity check fails.
     """
     nonce: bytes = packet_num.to_bytes(GCM_NONCE_SIZE, byteorder="big")
     aes_gcm = AESGCM(session_key)

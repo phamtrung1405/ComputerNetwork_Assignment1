@@ -1,11 +1,10 @@
 """
 client/http_ui.py
 ~~~~~~~~~~~~~~~~~
-Máy chủ web nội bộ tĩnh sử dụng raw TCP socket.
+Internal static HTTP web server using raw TCP sockets.
 
-Cấp file HTML/CSS/JS tĩnh, xử lý REST API (POST), và duy trì
-kết nối Server-Sent Events (SSE) để đẩy dữ liệu real-time lên
-trình duyệt.
+Serves static HTML/CSS/JS files, handles REST API (POST) requests, and maintains
+Server-Sent Events (SSE) connections to push real-time data to browsers.
 """
 
 from __future__ import annotations
@@ -28,22 +27,22 @@ from common.constants import DEFAULT_HTTP_PORT
 
 logger = logging.getLogger(__name__)
 
-# Thư mục static
+# Static assets directory
 _STATIC_DIR: str = os.path.join(os.path.dirname(__file__), "static")
 
 
 class HttpUI:
-    """Máy chủ HTTP nội bộ dùng raw TCP socket.
+    """Internal HTTP server using raw TCP sockets.
 
-    Phục vụ file tĩnh (HTML/CSS/JS) và cung cấp các endpoint:
-    - ``GET /`` → index.html
-    - ``GET /static/<path>`` → file tĩnh
-    - ``GET /events`` → SSE stream
-    - ``POST /api/login`` → đăng nhập
-    - ``POST /api/send`` → gửi chat
-    - ``POST /api/file`` → gửi file
-    - ``GET /api/status`` → trạng thái
-    - ``GET /api/progress`` → tiến trình file
+    Serves static files (HTML/CSS/JS) and provides endpoints:
+    - ``GET /`` -> index.html
+    - ``GET /static/<path>`` -> static files
+    - ``GET /events`` -> SSE stream
+    - ``POST /api/login`` -> user login
+    - ``POST /api/send`` -> send chat message
+    - ``POST /api/file`` -> file upload
+    - ``GET /api/status`` -> connection status
+    - ``GET /api/progress`` -> file transfer progress
     """
 
     def __init__(
@@ -51,11 +50,11 @@ class HttpUI:
         port: int = DEFAULT_HTTP_PORT,
         client: Optional[ChatClient] = None,
     ) -> None:
-        """Khởi tạo socket TCP tại 127.0.0.1.
+        """Initialize TCP socket at 127.0.0.1.
 
         Args:
-            port: Cổng HTTP (mặc định 8080).
-            client: Đối tượng ChatClient để giao tiếp.
+            port: HTTP port (default 8080).
+            client: ChatClient object for communication.
         """
         self._port: int = port
         self._client: Optional[ChatClient] = client
@@ -65,19 +64,19 @@ class HttpUI:
         self._sse_lock: threading.Lock = threading.Lock()
 
     def set_client(self, client: ChatClient) -> None:
-        """Gán ChatClient sau khi khởi tạo.
+        """Assign ChatClient after initialization.
 
         Args:
-            client: Đối tượng ChatClient.
+            client: ChatClient instance.
         """
         self._client = client
 
-    # ─────────────────────── Start ───────────────────────
+    # ----------------------- Start -----------------------
 
     def start(self) -> None:
-        """Lắng nghe kết nối TCP từ trình duyệt.
+        """Listen for TCP connections from web browsers.
 
-        Chạy blocking – nên gọi trong thread riêng.
+        Blocking execution – recommended to run in a dedicated thread.
         """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -86,9 +85,9 @@ class HttpUI:
         self._sock.settimeout(1.0)
         self._running = True
 
-        logger.info("HTTP UI tại http://127.0.0.1:%d", self._port)
+        logger.info("HTTP UI listening at http://127.0.0.1:%d", self._port)
 
-        # Thread đẩy SSE events
+        # Thread pumping SSE events
         sse_thread = threading.Thread(target=self._sse_pump, daemon=True)
         sse_thread.start()
 
@@ -106,13 +105,13 @@ class HttpUI:
             except OSError:
                 break
 
-    # ─────────────────────── Request handler ─────────────────────
+    # ----------------------- Request handler ---------------------
 
     def handle_http_request(self, client_socket: socket.socket) -> None:
-        """Phân tích cú pháp HTTP GET/POST thô và phản hồi.
+        """Parse raw HTTP GET/POST requests and send responses.
 
         Args:
-            client_socket: Socket TCP đã accept.
+            client_socket: Accepted TCP socket.
         """
         try:
             client_socket.settimeout(15.0)
@@ -161,7 +160,7 @@ class HttpUI:
                 client_socket.close()
                 return
 
-            # ── Routing ──
+            # -- Routing --
             if method == "GET" and path == "/":
                 self._serve_static(client_socket, "index.html")
             elif method == "GET" and path == "/events":
@@ -201,7 +200,7 @@ class HttpUI:
     def _read_text_body(
         self, client_socket: socket.socket, body_prefix: bytes, content_length: int
     ) -> str:
-        """Đọc toàn bộ nội dung body dạng text UTF-8."""
+        """Read full UTF-8 text body content."""
         body_bytes = bytearray(body_prefix)
         while len(body_bytes) < content_length:
             to_read = min(4096, content_length - len(body_bytes))
@@ -211,16 +210,16 @@ class HttpUI:
             body_bytes.extend(chunk)
         return body_bytes.decode("utf-8", errors="replace")
 
-    # ─────────────────────── Static files ────────────────────────
+    # ----------------------- Static files ------------------------
 
     def _serve_static(
         self, client_socket: socket.socket, filename: str
     ) -> None:
-        """Phục vụ file tĩnh từ thư mục static/.
+        """Serve static files from static/ directory.
 
         Args:
-            client_socket: Socket client.
-            filename: Tên file cần phục vụ.
+            client_socket: Client socket.
+            filename: File name to serve.
         """
         filepath: str = os.path.join(_STATIC_DIR, filename)
         if not os.path.isfile(filepath):
@@ -238,13 +237,13 @@ class HttpUI:
         self._send_response(client_socket, 200, content_type, content)
         client_socket.close()
 
-    # ─────────────────────── SSE ───────────────────────
+    # ----------------------- SSE -----------------------
 
     def _handle_sse(self, client_socket: socket.socket) -> None:
-        """Thiết lập kết nối Server-Sent Events.
+        """Establish Server-Sent Events connection.
 
         Args:
-            client_socket: Socket client.
+            client_socket: Client socket.
         """
         response_header: str = (
             "HTTP/1.1 200 OK\r\n"
@@ -256,11 +255,11 @@ class HttpUI:
         )
         try:
             client_socket.sendall(response_header.encode("utf-8"))
-            # Gửi comment ban đầu để giữ kết nối
+            # Initial keepalive comment
             client_socket.sendall(b": connected\n\n")
             with self._sse_lock:
                 self._sse_clients.append(client_socket)
-            logger.debug("SSE client kết nối")
+            logger.debug("SSE client connected")
         except OSError:
             try:
                 client_socket.close()
@@ -268,7 +267,7 @@ class HttpUI:
                 pass
 
     def _sse_pump(self) -> None:
-        """Thread liên tục đọc event_queue và đẩy SSE events."""
+        """Continuously poll event_queue and push SSE events."""
         while self._running:
             if self._client is None:
                 time.sleep(0.1)
@@ -278,24 +277,24 @@ class HttpUI:
                 event: dict = self._client.event_queue.get(timeout=0.5)
                 self._broadcast_sse(event)
             except queue.Empty:
-                # Gửi heartbeat SSE để giữ kết nối
+                # Send periodic heartbeat comment to keep connection alive
                 self._broadcast_sse_raw(": heartbeat\n\n")
 
     def _broadcast_sse(self, event: dict) -> None:
-        """Gửi một event JSON đến tất cả SSE clients.
+        """Send JSON event to all connected SSE clients.
 
         Args:
-            event: Dict event data.
+            event: Event dict data.
         """
         data_str: str = json.dumps(event, ensure_ascii=False)
         sse_message: str = f"data: {data_str}\n\n"
         self._broadcast_sse_raw(sse_message)
 
     def _broadcast_sse_raw(self, message: str) -> None:
-        """Gửi raw SSE message đến tất cả clients.
+        """Send raw SSE formatted string to all clients.
 
         Args:
-            message: Chuỗi SSE đã format.
+            message: Formatted SSE string.
         """
         encoded: bytes = message.encode("utf-8")
         with self._sse_lock:
@@ -312,16 +311,16 @@ class HttpUI:
                 except OSError:
                     pass
 
-    # ─────────────────────── API handlers ────────────────────────
+    # ----------------------- API handlers ------------------------
 
     def _handle_login(
         self, client_socket: socket.socket, body: str
     ) -> None:
-        """Xử lý POST /api/login.
+        """Handle POST /api/login.
 
         Args:
-            client_socket: Socket client.
-            body: JSON body.
+            client_socket: Client socket.
+            body: JSON body string.
         """
         try:
             data: dict = json.loads(body)
@@ -332,26 +331,26 @@ class HttpUI:
                 self._client.connect(username, password)
                 resp: dict = {
                     "status": "connecting",
-                    "message": f"Đang kết nối với tư cách {username}...",
+                    "message": f"Connecting as {username}...",
                 }
             else:
-                resp = {"status": "error", "message": "Client chưa sẵn sàng"}
+                resp = {"status": "error", "message": "Client not ready"}
 
             self._send_json_response(client_socket, 200, resp)
         except json.JSONDecodeError:
             self._send_json_response(
-                client_socket, 400, {"status": "error", "message": "JSON không hợp lệ"}
+                client_socket, 400, {"status": "error", "message": "Invalid JSON"}
             )
         client_socket.close()
 
     def _handle_send(
         self, client_socket: socket.socket, body: str
     ) -> None:
-        """Xử lý POST /api/send.
+        """Handle POST /api/send.
 
         Args:
-            client_socket: Socket client.
-            body: JSON body chứa ``target`` và ``text``.
+            client_socket: Client socket.
+            body: JSON body containing ``target`` and ``text``.
         """
         try:
             data: dict = json.loads(body)
@@ -361,26 +360,26 @@ class HttpUI:
             if self._client is not None and self._client.is_authenticated:
                 self._client.send_chat(target, text)
                 self._send_json_response(
-                    client_socket, 200, {"status": "ok", "message": "Đã gửi"}
+                    client_socket, 200, {"status": "ok", "message": "Sent"}
                 )
             else:
                 self._send_json_response(
-                    client_socket, 401, {"status": "error", "message": "Chưa đăng nhập"}
+                    client_socket, 401, {"status": "error", "message": "Not logged in"}
                 )
         except json.JSONDecodeError:
             self._send_json_response(
-                client_socket, 400, {"status": "error", "message": "JSON không hợp lệ"}
+                client_socket, 400, {"status": "error", "message": "Invalid JSON"}
             )
         client_socket.close()
 
     def _handle_file_upload(
         self, client_socket: socket.socket, body: str
     ) -> None:
-        """Xử lý POST /api/file.
+        """Handle POST /api/file.
 
         Args:
-            client_socket: Socket client.
-            body: JSON body chứa ``file_path`` và ``target``.
+            client_socket: Client socket.
+            body: JSON body containing ``file_path`` and ``target``.
         """
         try:
             data: dict = json.loads(body)
@@ -393,19 +392,19 @@ class HttpUI:
                     self._send_json_response(
                         client_socket,
                         200,
-                        {"status": "ok", "stream_id": stream_id, "message": "Bắt đầu truyền file"},
+                        {"status": "ok", "stream_id": stream_id, "message": "File transfer started"},
                     )
                 else:
                     self._send_json_response(
-                        client_socket, 400, {"status": "error", "message": "File không tồn tại"}
+                        client_socket, 400, {"status": "error", "message": "File not found"}
                     )
             else:
                 self._send_json_response(
-                    client_socket, 401, {"status": "error", "message": "Chưa đăng nhập"}
+                    client_socket, 401, {"status": "error", "message": "Not logged in"}
                 )
         except json.JSONDecodeError:
             self._send_json_response(
-                client_socket, 400, {"status": "error", "message": "JSON không hợp lệ"}
+                client_socket, 400, {"status": "error", "message": "Invalid JSON"}
             )
         client_socket.close()
 
@@ -417,19 +416,19 @@ class HttpUI:
         body_prefix: bytes,
         content_length: int,
     ) -> None:
-        """Xử lý upload file nhị phân trực tiếp từ trình duyệt qua POST /api/file.
+        """Handle direct binary file upload from browser via POST /api/file.
 
         Args:
-            client_socket: Socket client.
-            query_params: Query params từ URL.
-            headers: Headers của request.
-            body_prefix: Dữ liệu body đã đọc sẵn.
-            content_length: Tổng độ dài body.
+            client_socket: Client socket.
+            query_params: URL query parameters.
+            headers: Request headers.
+            body_prefix: Initial body bytes read.
+            content_length: Total content length.
         """
         try:
             if self._client is None or not self._client.is_authenticated:
                 self._send_json_response(
-                    client_socket, 401, {"status": "error", "message": "Chưa đăng nhập"}
+                    client_socket, 401, {"status": "error", "message": "Not logged in"}
                 )
                 client_socket.close()
                 return
@@ -449,7 +448,7 @@ class HttpUI:
             )
             target = unquote(raw_target) if raw_target else "all"
 
-            # Lưu vào thư mục tạm thời riêng biệt theo từng lượt gửi
+            # Save to isolated temporary directory per transfer
             upload_subfolder = os.path.join(
                 tempfile.gettempdir(),
                 "streamchat_uploads",
@@ -479,17 +478,17 @@ class HttpUI:
                         "status": "ok",
                         "stream_id": stream_id,
                         "filename": safe_filename,
-                        "message": "Bắt đầu truyền file",
+                        "message": "File transfer started",
                     },
                 )
             else:
                 self._send_json_response(
                     client_socket,
                     400,
-                    {"status": "error", "message": "Không thể bắt đầu truyền file"},
+                    {"status": "error", "message": "Could not start file transfer"},
                 )
         except Exception as exc:
-            logger.error("Lỗi nhận file upload: %s", exc)
+            logger.error("File upload error: %s", exc)
             self._send_json_response(
                 client_socket, 500, {"status": "error", "message": str(exc)}
             )
@@ -500,10 +499,10 @@ class HttpUI:
                 pass
 
     def _handle_status(self, client_socket: socket.socket) -> None:
-        """Xử lý GET /api/status.
+        """Handle GET /api/status.
 
         Args:
-            client_socket: Socket client.
+            client_socket: Client socket.
         """
         status: dict = {
             "authenticated": self._client.is_authenticated if self._client else False,
@@ -514,10 +513,10 @@ class HttpUI:
         client_socket.close()
 
     def _handle_progress(self, client_socket: socket.socket) -> None:
-        """Xử lý GET /api/progress.
+        """Handle GET /api/progress.
 
         Args:
-            client_socket: Socket client.
+            client_socket: Client socket.
         """
         progress: dict = {}
         if self._client is not None:
@@ -525,7 +524,7 @@ class HttpUI:
         self._send_json_response(client_socket, 200, progress)
         client_socket.close()
 
-    # ─────────────────────── HTTP helpers ────────────────────────
+    # ----------------------- HTTP helpers ------------------------
 
     def _send_response(
         self,
@@ -534,13 +533,13 @@ class HttpUI:
         content_type: str,
         body: bytes,
     ) -> None:
-        """Gửi HTTP response thô.
+        """Send raw HTTP response.
 
         Args:
-            client_socket: Socket client.
-            status_code: Mã trạng thái HTTP.
+            client_socket: Client socket.
+            status_code: HTTP status code.
             content_type: MIME type.
-            body: Nội dung phản hồi.
+            body: Response payload bytes.
         """
         status_text: str = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found"}.get(
             status_code, "Unknown"
@@ -558,7 +557,7 @@ class HttpUI:
         try:
             client_socket.sendall(header.encode("utf-8") + body)
         except OSError as exc:
-            logger.debug("Gửi response thất bại: %s", exc)
+            logger.debug("Failed to send HTTP response: %s", exc)
 
     def _send_json_response(
         self,
@@ -566,20 +565,20 @@ class HttpUI:
         status_code: int,
         data: dict,
     ) -> None:
-        """Gửi JSON response.
+        """Send JSON response.
 
         Args:
-            client_socket: Socket client.
-            status_code: Mã trạng thái HTTP.
-            data: Dict dữ liệu.
+            client_socket: Client socket.
+            status_code: HTTP status code.
+            data: Data dict.
         """
         body: bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send_response(client_socket, status_code, "application/json", body)
 
-    # ─────────────────────── Shutdown ───────────────────────
+    # ----------------------- Shutdown -----------------------
 
     def stop(self) -> None:
-        """Dừng HTTP server."""
+        """Stop HTTP server."""
         self._running = False
         if self._sock:
             try:
@@ -593,4 +592,4 @@ class HttpUI:
                 except OSError:
                     pass
             self._sse_clients.clear()
-        logger.info("HTTP UI đã dừng")
+        logger.info("HTTP UI stopped")

@@ -1,10 +1,10 @@
 """
 transport/connection.py
 ~~~~~~~~~~~~~~~~~~~~~~~
-Quản lý vòng đời của một kết nối UDP logic (mô phỏng kết nối
-có trạng thái trên nền UDP không trạng thái).
+Manages the lifecycle of a logical UDP connection (simulating a
+stateful connection on top of stateless UDP).
 
-Bao gồm: handshake, mã hóa, gửi/nhận gói tin, heartbeat và
+Includes: handshake, encryption, packet sending/receiving, heartbeat, and
 retransmission.
 """
 
@@ -48,10 +48,10 @@ logger = logging.getLogger(__name__)
 
 
 class Connection:
-    """Kết nối UDP logic giữa hai endpoint.
+    """Logical UDP connection between two endpoints.
 
-    Quản lý handshake (trao đổi khóa), mã hóa/giải mã, gửi/nhận
-    gói tin, heartbeat keepalive và retransmission.
+    Manages handshake (key exchange), encryption/decryption, sending/receiving
+    packets, heartbeat keepalive, and retransmission.
     """
 
     def __init__(
@@ -62,15 +62,15 @@ class Connection:
         is_server: bool = False,
         on_app_message: Optional[Callable[[int, bytes], None]] = None,
     ) -> None:
-        """Khởi tạo Connection.
+        """Initialize Connection.
 
         Args:
-            sock: UDP socket đã bind sẵn.
-            remote_addr: Tuple ``(host, port)`` của bên kia.
-            conn_id: Định danh kết nối (uint32). 0 = chưa gán.
-            is_server: ``True`` nếu đây là phía server.
-            on_app_message: Callback ``(stream_id, data)`` khi nhận
-                            message hoàn chỉnh từ một Stream.
+            sock: Pre-bound UDP socket.
+            remote_addr: Tuple ``(host, port)`` of remote peer.
+            conn_id: Connection identifier (uint32). 0 = unassigned.
+            is_server: ``True`` if server side.
+            on_app_message: Callback ``(stream_id, data)`` when receiving
+                            a complete message from a Stream.
         """
         self.sock: socket.socket = sock
         self.remote_addr: tuple[str, int] = remote_addr
@@ -78,54 +78,54 @@ class Connection:
         self.is_server: bool = is_server
         self.on_app_message: Optional[Callable[[int, bytes], None]] = on_app_message
 
-        # ── Crypto ──
+        # Crypto
         self._private_key: Optional[X25519PrivateKey] = None
         self._public_bytes: Optional[bytes] = None
         self._session_key: Optional[bytes] = None
         self.handshake_complete: threading.Event = threading.Event()
 
-        # ── Sequence numbers ──
+        # Sequence numbers
         self._next_seq: int = 0
         self._seq_lock: threading.Lock = threading.Lock()
 
-        # ── Streams ──
+        # Streams
         self._streams: dict[int, Stream] = {}
         self._streams_lock: threading.Lock = threading.Lock()
         self._next_stream_id: int = 1 if not is_server else 2  # odd/even
 
-        # ── Reliability ──
+        # Reliability
         self.reliability: ReliabilityManager = ReliabilityManager()
 
-        # ── Timing ──
+        # Timing
         self._last_recv_time: float = time.monotonic()
         self._last_heartbeat: float = 0.0
 
-        # ── Trạng thái ──
+        # Status
         self.closed: bool = False
 
     # ─────────────────────── Sequence number ───────────────────────
 
     def _alloc_seq(self) -> int:
-        """Cấp phát sequence number mới (thread-safe).
+        """Allocate a new sequence number (thread-safe).
 
         Returns:
-            Số thứ tự mới.
+            Newly allocated sequence number.
         """
         with self._seq_lock:
             seq = self._next_seq
             self._next_seq += 1
             return seq
 
-    # ─────────────────────── Stream management ─────────────────────
+    # ─────────────────────── Stream management ───────────────────────
 
     def get_or_create_stream(self, stream_id: int) -> Stream:
-        """Lấy hoặc tạo mới Stream theo ID.
+        """Get or create a Stream by ID.
 
         Args:
-            stream_id: Mã stream.
+            stream_id: Stream identifier.
 
         Returns:
-            Đối tượng Stream tương ứng.
+            Corresponding Stream object.
         """
         with self._streams_lock:
             if stream_id not in self._streams:
@@ -137,14 +137,14 @@ class Connection:
             return self._streams[stream_id]
 
     def allocate_stream(self) -> Stream:
-        """Tạo Stream mới với ID tự động.
+        """Create a new Stream with an auto-assigned ID.
 
         Returns:
-            Đối tượng Stream mới.
+            Newly created Stream object.
         """
         with self._streams_lock:
             sid = self._next_stream_id
-            self._next_stream_id += 2  # giữ chẵn/lẻ
+            self._next_stream_id += 2  # maintain odd/even parity
             stream = Stream(
                 stream_id=sid,
                 send_callback=self._stream_send_callback,
@@ -155,17 +155,17 @@ class Connection:
     def _stream_send_callback(
         self, stream_id: int, offset: int, chunk: bytes, flags: int
     ) -> None:
-        """Callback được Stream gọi khi cần gửi chunk.
+        """Callback invoked by Stream when a chunk needs to be sent.
 
         Args:
-            stream_id: Mã stream.
+            stream_id: Stream identifier.
             offset: Byte offset.
-            chunk: Dữ liệu chunk.
-            flags: Cờ điều khiển (VD: FLAG_EOM).
+            chunk: Chunk data.
+            flags: Control flags (e.g. FLAG_EOM).
         """
         self.send_packet(PKT_DATA, stream_id, chunk, flags=flags, offset=offset)
 
-    # ─────────────────────── Gửi gói tin ───────────────────────
+    # ─────────────────────── SEND PACKET ───────────────────────
 
     def send_packet(
         self,
@@ -175,18 +175,18 @@ class Connection:
         flags: int = FLAG_NONE,
         offset: int = 0,
     ) -> None:
-        """Tạo packet, mã hóa (nếu có key), ghi vào reliability buffer và gửi.
+        """Create packet, encrypt (if key available), buffer for reliability, and send.
 
         Args:
-            packet_type: Loại gói tin (PKT_DATA, PKT_ACK, …).
-            stream_id: Mã stream.
-            payload: Dữ liệu ứng dụng.
-            flags: Cờ điều khiển.
-            offset: Byte offset trong stream.
+            packet_type: Packet type (PKT_DATA, PKT_ACK, ...).
+            stream_id: Stream identifier.
+            payload: Application data payload.
+            flags: Control flags.
+            offset: Byte offset within stream.
         """
         seq: int = self._alloc_seq()
 
-        # Mã hóa nếu đã có session key
+        # Encrypt if session key established
         actual_payload: bytes = payload
         if self._session_key is not None and packet_type == PKT_DATA:
             actual_payload = encrypt(payload, self._session_key, seq)
@@ -202,37 +202,37 @@ class Connection:
             payload=actual_payload,
         )
 
-        # Ghi nhận vào reliability nếu cần ACK
+        # Buffer in reliability manager if ACK required
         if packet_type == PKT_DATA:
             self.reliability.mark_sent(seq, raw)
 
         self._raw_send(raw)
 
     def _raw_send(self, data: bytes) -> None:
-        """Gửi dữ liệu thô qua UDP socket.
+        """Send raw bytes over UDP socket.
 
         Args:
-            data: Bytes cần gửi.
+            data: Bytes to send.
         """
         try:
             self.sock.sendto(data, self.remote_addr)
         except OSError as exc:
-            logger.warning("Gửi thất bại đến %s: %s", self.remote_addr, exc)
+            logger.warning("Failed to send to %s: %s", self.remote_addr, exc)
 
-    # ─────────────────────── Nhận gói tin ───────────────────────
+    # ─────────────────────── RECEIVE PACKET ───────────────────────
 
     def receive_packet(self, raw_bytes: bytes) -> None:
-        """Giải mã và phân loại gói tin đến.
+        """Decode and dispatch incoming packet.
 
         Args:
-            raw_bytes: Dữ liệu thô nhận từ socket.
+            raw_bytes: Raw data received from socket.
         """
         self._last_recv_time = time.monotonic()
 
         try:
             header, payload = packet.unpack(raw_bytes)
         except ValueError as exc:
-            logger.debug("Bỏ qua gói lỗi: %s", exc)
+            logger.debug("Discarding malformed packet: %s", exc)
             return
 
         msg_type: int = header.msg_type
@@ -248,15 +248,15 @@ class Connection:
         elif msg_type == PKT_HEARTBEAT:
             self._send_heartbeat_ack()
         elif msg_type == PKT_HEARTBEAT_ACK:
-            logger.debug("Heartbeat ACK nhận từ %s", self.remote_addr)
+            logger.debug("Heartbeat ACK received from %s", self.remote_addr)
         else:
-            logger.debug("Loại gói không xác định: 0x%02X", msg_type)
+            logger.debug("Unknown packet type: 0x%02X", msg_type)
 
     def _handle_ack(self, payload: bytes) -> None:
-        """Xử lý gói ACK, chuyển tiếp cho ReliabilityManager.
+        """Handle incoming ACK packet and forward to ReliabilityManager.
 
         Args:
-            payload: JSON chứa dải SACK.
+            payload: JSON containing SACK ranges.
         """
         try:
             ack_info = json.loads(payload.decode("utf-8"))
@@ -265,19 +265,19 @@ class Connection:
             ]
             self.reliability.process_sack(ranges)
         except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
-            logger.debug("ACK payload lỗi: %s", exc)
+            logger.debug("Malformed ACK payload: %s", exc)
 
     def _handle_data(self, header: packet.Header, payload: bytes) -> None:
-        """Xử lý gói DATA: giải mã, đẩy vào Stream, gửi ACK.
+        """Handle DATA packet: decrypt, feed to Stream, send ACK.
 
         Args:
-            header: Header đã unpack.
-            payload: Payload (có thể đã mã hóa).
+            header: Unpacked header.
+            payload: Payload (potentially encrypted).
         """
-        # Gửi ACK ngay lập tức
+        # Send immediate ACK
         self._send_ack(header.seq_num)
 
-        # Giải mã nếu cần
+        # Decrypt if needed
         actual_payload: bytes = payload
         if (header.flags & FLAG_ENCRYPTED) and self._session_key is not None:
             try:
@@ -285,7 +285,7 @@ class Connection:
                     payload, self._session_key, header.seq_num
                 )
             except Exception as exc:
-                logger.warning("Giải mã thất bại seq=%d: %s", header.seq_num, exc)
+                logger.warning("Decryption failed for seq=%d: %s", header.seq_num, exc)
                 return
 
         is_eom: bool = bool(header.flags & FLAG_EOM)
@@ -300,10 +300,10 @@ class Connection:
             self.on_app_message(header.stream_id, complete_msg)
 
     def _send_ack(self, seq_num: int) -> None:
-        """Gửi ACK cho một sequence number.
+        """Send ACK for a given sequence number.
 
         Args:
-            seq_num: Số thứ tự gói cần xác nhận.
+            seq_num: Packet sequence number to acknowledge.
         """
         ack_payload: bytes = json.dumps(
             {"ranges": [[seq_num, seq_num]]}
@@ -319,12 +319,12 @@ class Connection:
         )
         self._raw_send(raw)
 
-    # ─────────────────────── Handshake ───────────────────────
+    # ─────────────────────── HANDSHAKE ───────────────────────
 
     def handle_handshake(self) -> None:
-        """Chạy quy trình trao đổi khóa HELLO → HELLO_ACK (phía Client).
+        """Run HELLO -> HELLO_ACK key exchange flow (Client side).
 
-        Client gửi HELLO chứa public key, đợi HELLO_ACK từ Server.
+        Client sends HELLO with public key, waits for HELLO_ACK from Server.
         """
         self._private_key, self._public_bytes = generate_keypair()
         hello_payload: bytes = json.dumps({
@@ -342,28 +342,28 @@ class Connection:
             payload=hello_payload,
         )
         self._raw_send(raw)
-        logger.info("Gửi HELLO đến %s (conn_id=%d)", self.remote_addr, self.conn_id)
+        logger.info("Sent HELLO to %s (conn_id=%d)", self.remote_addr, self.conn_id)
 
     def _handle_hello(self, header: packet.Header, payload: bytes) -> None:
-        """Xử lý HELLO từ Client (phía Server).
+        """Handle HELLO from Client (Server side).
 
         Args:
-            header: Header của gói HELLO.
-            payload: JSON chứa public key của client.
+            header: HELLO packet header.
+            payload: JSON containing client public key.
         """
         try:
             info = json.loads(payload.decode("utf-8"))
             peer_pub_hex: str = info["public_key"]
             peer_pub_bytes: bytes = bytes.fromhex(peer_pub_hex)
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            logger.warning("HELLO payload lỗi: %s", exc)
+            logger.warning("Malformed HELLO payload: %s", exc)
             return
 
-        # Tạo keypair phía server
+        # Generate server-side keypair
         self._private_key, self._public_bytes = generate_keypair()
         self._session_key = derive_shared_secret(self._private_key, peer_pub_bytes)
 
-        # Gửi HELLO_ACK với public key của server
+        # Send HELLO_ACK with server public key
         ack_payload: bytes = json.dumps({
             "public_key": self._public_bytes.hex(),
             "conn_id": self.conn_id,
@@ -381,38 +381,38 @@ class Connection:
         self._raw_send(raw)
         self.handshake_complete.set()
         logger.info(
-            "Handshake hoàn tất (server side) conn_id=%d", self.conn_id
+            "Handshake complete (server side) conn_id=%d", self.conn_id
         )
 
     def _handle_hello_ack(self, header: packet.Header, payload: bytes) -> None:
-        """Xử lý HELLO_ACK từ Server (phía Client).
+        """Handle HELLO_ACK from Server (Client side).
 
         Args:
-            header: Header gói HELLO_ACK.
-            payload: JSON chứa public key server.
+            header: HELLO_ACK packet header.
+            payload: JSON containing server public key.
         """
         try:
             info = json.loads(payload.decode("utf-8"))
             peer_pub_hex: str = info["public_key"]
             peer_pub_bytes: bytes = bytes.fromhex(peer_pub_hex)
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            logger.warning("HELLO_ACK payload lỗi: %s", exc)
+            logger.warning("Malformed HELLO_ACK payload: %s", exc)
             return
 
         if self._private_key is None:
-            logger.warning("Chưa gửi HELLO mà nhận HELLO_ACK")
+            logger.warning("Received HELLO_ACK without sending HELLO")
             return
 
         self._session_key = derive_shared_secret(self._private_key, peer_pub_bytes)
         self.handshake_complete.set()
         logger.info(
-            "Handshake hoàn tất (client side) conn_id=%d", self.conn_id
+            "Handshake complete (client side) conn_id=%d", self.conn_id
         )
 
     # ─────────────────────── Heartbeat ───────────────────────
 
     def _send_heartbeat(self) -> None:
-        """Gửi gói Heartbeat keepalive."""
+        """Send Heartbeat keepalive packet."""
         raw: bytes = packet.pack(
             msg_type=PKT_HEARTBEAT,
             conn_id=self.conn_id,
@@ -426,7 +426,7 @@ class Connection:
         self._last_heartbeat = time.monotonic()
 
     def _send_heartbeat_ack(self) -> None:
-        """Gửi phản hồi Heartbeat."""
+        """Send Heartbeat response ACK."""
         raw: bytes = packet.pack(
             msg_type=PKT_HEARTBEAT_ACK,
             conn_id=self.conn_id,
@@ -441,16 +441,16 @@ class Connection:
     # ─────────────────────── Tick loop ───────────────────────
 
     def tick(self) -> None:
-        """Kiểm tra timeout, gửi heartbeat, kích hoạt retransmission.
+        """Check timeouts, send heartbeat, and trigger retransmission.
 
-        Hàm này được gọi định kỳ bởi event loop.
+        This method is invoked periodically by the event loop.
         """
         now: float = time.monotonic()
 
         # Idle timeout
         if now - self._last_recv_time > IDLE_TIMEOUT:
             logger.warning(
-                "Connection %d idle quá %ss – đánh dấu đóng",
+                "Connection %d idle for > %ss – marking closed",
                 self.conn_id,
                 IDLE_TIMEOUT,
             )
@@ -465,4 +465,4 @@ class Connection:
         retransmits: list[bytes] = self.reliability.get_retransmits()
         for raw_pkt in retransmits:
             self._raw_send(raw_pkt)
-            logger.debug("Truyền lại gói trên conn %d", self.conn_id)
+            logger.debug("Retransmitting packet on conn %d", self.conn_id)

@@ -1,11 +1,11 @@
 """
 run_server.py
 ~~~~~~~~~~~~~
-Script khởi chạy máy chủ trung tâm StreamChat:
-- Web UI & SSE Server: Lắng nghe trên cổng 8080 (Client-Server HTTP & SSE chuẩn).
-- UDP Transport Engine: Lắng nghe trên cổng UDP 9000 (đáp ứng tiêu chuẩn truyền tải phân tán).
+Launcher script for StreamChat central server:
+- Web UI & SSE Server: Listens on port 8080 (Standard Client-Server HTTP & SSE).
+- UDP Transport Engine: Listens on UDP port 9000 (Compliant with distributed transport protocol).
 
-Sử dụng:
+Usage:
     python run_server.py [--host HOST] [--port UDP_PORT] [--web-port WEB_PORT]
 """
 
@@ -16,10 +16,10 @@ from pathlib import Path
 import sys
 import threading
 
-# Thêm thư mục src vào sys.path để import các module
+# Add src folder to sys.path to import modules
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-# Đảm bảo UTF-8 output trên Windows console
+# Ensure UTF-8 output on Windows console
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -33,25 +33,25 @@ from server.web_server import UnifiedChatServer
 
 
 def main() -> None:
-    """Entry point cho server."""
+    """Entry point for server."""
     parser = argparse.ArgumentParser(description="StreamChat Unified Server")
     parser.add_argument(
         "--host",
         type=str,
         default=DEFAULT_SERVER_HOST,
-        help=f"Địa chỉ IP lắng nghe (mặc định: {DEFAULT_SERVER_HOST})",
+        help=f"Listening IP address (default: {DEFAULT_SERVER_HOST})",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=DEFAULT_SERVER_PORT,
-        help=f"Cổng UDP (mặc định: {DEFAULT_SERVER_PORT})",
+        help=f"UDP port (default: {DEFAULT_SERVER_PORT})",
     )
     parser.add_argument(
         "--web-port",
         type=int,
         default=DEFAULT_HTTP_PORT,
-        help=f"Cổng Web UI và SSE (mặc định: {DEFAULT_HTTP_PORT})",
+        help=f"Web UI and SSE port (default: {DEFAULT_HTTP_PORT})",
     )
     args = parser.parse_args()
 
@@ -60,10 +60,10 @@ def main() -> None:
     print("===============================================================")
     print(f"  * Web UI & SSE Server:    http://127.0.0.1:{args.web_port}")
     print(f"  * UDP Transport Engine:   127.0.0.1:{args.port} (UDP)")
-    print("  * Ho tro hang tram tai khoan mo tren cung dia chi:cong 8080")
+    print(f"  * Supports multiple accounts on port {args.web_port}")
     print("===============================================================")
 
-    # 1. Khởi chạy UDP ChatServer trong thread nền
+    # 1. Start UDP ChatServer in a background thread
     udp_server = ChatServer()
     udp_thread = threading.Thread(
         target=udp_server.start_server,
@@ -72,12 +72,12 @@ def main() -> None:
     )
     udp_thread.start()
 
-    # 2. Khởi chạy Web & WebSocket Server trên cổng 8080 (blocking)
+    # 2. Start Web & SSE Server on port 8080 (blocking)
     web_server = UnifiedChatServer(host="0.0.0.0", port=args.web_port)
     try:
         web_server.start()
     except KeyboardInterrupt:
-        print("\n[HỆ THỐNG] Máy chủ StreamChat đã dừng.")
+        print("\n[SYSTEM] StreamChat Server stopped.")
         web_server.stop()
         sys.exit(0)
 

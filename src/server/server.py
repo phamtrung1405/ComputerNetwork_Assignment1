@@ -1,10 +1,10 @@
 """
 server/server.py
 ~~~~~~~~~~~~~~~~
-Điểm khởi chạy của máy chủ trung tâm.
+Central server entry point.
 
-Khởi tạo raw UDP socket non-blocking, sử dụng ``selectors``
-cho event loop. Quản lý tất cả sessions và chuyển tiếp datagram.
+Initializes non-blocking raw UDP socket, uses ``selectors`` for the event loop,
+manages all client sessions, and dispatches datagrams.
 """
 
 from __future__ import annotations
@@ -36,41 +36,41 @@ logger = logging.getLogger(__name__)
 
 
 class ChatServer:
-    """Máy chủ UDP trung tâm quản lý nhiều client.
+    """Central UDP server managing multiple client connections.
 
-    Sử dụng ``selectors`` để multiplexing I/O trên một socket duy nhất.
-    Mỗi client được quản lý bởi một Session riêng.
+    Uses ``selectors`` to multiplex I/O on a single socket.
+    Each client is managed by an independent Session.
     """
 
     def __init__(self) -> None:
-        """Khởi tạo server với các cấu trúc dữ liệu quản lý session."""
+        """Initialize server with session management data structures."""
         self._sock: Optional[socket.socket] = None
         self._sel: Optional[selectors.DefaultSelector] = None
         self._running: bool = False
 
-        # ── Session management ──
-        # conn_id → Session
+        # -- Session management --
+        # conn_id -> Session
         self._sessions: dict[int, Session] = {}
         self._sessions_lock: threading.Lock = threading.Lock()
 
-        # addr → conn_id (mapping để nhận diện client từ địa chỉ)
+        # addr -> conn_id (mapping to identify client from address)
         self._addr_to_conn: dict[tuple[str, int], int] = {}
 
-        # username → conn_id (mapping để unicast)
+        # username -> conn_id (mapping for unicast routing)
         self._user_to_conn: dict[str, int] = {}
 
-    # ─────────────────────── Khởi chạy ───────────────────────
+    # ----------------------- Startup -----------------------
 
     def start_server(
         self,
         host: str = DEFAULT_SERVER_HOST,
         port: int = DEFAULT_SERVER_PORT,
     ) -> None:
-        """Khởi tạo raw UDP socket non-blocking và bắt đầu event loop.
+        """Initialize non-blocking raw UDP socket and start the event loop.
 
         Args:
-            host: Địa chỉ IP lắng nghe.
-            port: Cổng UDP.
+            host: Listening IP address.
+            port: Listening UDP port.
         """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -81,13 +81,13 @@ class ChatServer:
         self._sel.register(self._sock, selectors.EVENT_READ)
 
         self._running = True
-        logger.info("Server đang lắng nghe tại %s:%d (UDP)", host, port)
+        logger.info("Server listening at %s:%d (UDP)", host, port)
 
-        # Chạy tick loop trong thread riêng
+        # Run tick loop in background thread
         tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         tick_thread.start()
 
-        # Event loop chính
+        # Main event loop
         try:
             while self._running:
                 events = self._sel.select(timeout=TICK_INTERVAL)
@@ -95,12 +95,12 @@ class ChatServer:
                     if key.fileobj is self._sock:
                         self._read_datagrams()
         except KeyboardInterrupt:
-            logger.info("Server đang tắt...")
+            logger.info("Server shutting down...")
         finally:
             self._cleanup()
 
     def _read_datagrams(self) -> None:
-        """Đọc tất cả datagram có sẵn trong buffer."""
+        """Read all available datagrams in the socket buffer."""
         while True:
             try:
                 data, addr = self._sock.recvfrom(RECV_BUFFER_SIZE)
@@ -108,48 +108,48 @@ class ChatServer:
             except BlockingIOError:
                 break
             except OSError as exc:
-                logger.warning("Lỗi đọc socket: %s", exc)
+                logger.warning("Socket read error: %s", exc)
                 break
 
-    # ─────────────────────── Xử lý datagram ───────────────────────
+    # ----------------------- Datagram Handling -----------------------
 
     def handle_datagram(self, data: bytes, addr: tuple[str, int]) -> None:
-        """Phân tích Connection ID từ datagram và chuyển tiếp vào Session.
+        """Extract Connection ID from datagram and forward to the Session.
 
         Args:
-            data: Dữ liệu thô nhận được.
-            addr: Địa chỉ ``(host, port)`` nguồn.
+            data: Raw datagram bytes received.
+            addr: Source ``(host, port)`` address.
         """
         try:
             header, payload = packet.unpack(data)
         except ValueError:
-            logger.debug("Datagram lỗi từ %s – bỏ qua", addr)
+            logger.debug("Corrupted datagram from %s – discarded", addr)
             return
 
         conn_id: int = header.conn_id
 
         with self._sessions_lock:
             if conn_id not in self._sessions:
-                # Tạo session mới cho client mới
+                # Create new session for newly connected client
                 self._create_session(conn_id, addr)
                 self._addr_to_conn[addr] = conn_id
 
             session: Session = self._sessions[conn_id]
 
-        # Cập nhật địa chỉ nếu client thay đổi port (NAT rebinding)
+        # Update address if client changed ports (NAT rebinding support)
         session.connection.remote_addr = addr
         session.connection.receive_packet(data)
 
-        # Cập nhật user mapping nếu đã xác thực
+        # Update user mapping if authenticated
         if session.authenticated and session.username:
             self._user_to_conn[session.username] = conn_id
 
     def _create_session(self, conn_id: int, addr: tuple[str, int]) -> None:
-        """Tạo một Session mới cho client.
+        """Create a new Session for a client.
 
         Args:
             conn_id: Connection ID.
-            addr: Địa chỉ client.
+            addr: Client address tuple.
         """
         if self._sock is None:
             return
@@ -171,14 +171,14 @@ class ChatServer:
         )
 
         self._sessions[conn_id] = session
-        logger.info("Session mới: conn_id=%d từ %s", conn_id, addr)
+        logger.info("New session: conn_id=%d from %s", conn_id, addr)
 
-    # ─────────────────────── App message callback ────────────────
+    # ----------------------- App message callback ----------------
 
     def _on_app_message(
         self, conn_id: int, stream_id: int, data: bytes
     ) -> None:
-        """Callback khi nhận được message hoàn chỉnh từ transport layer.
+        """Callback invoked when a complete message is received from transport layer.
 
         Args:
             conn_id: Connection ID.
@@ -190,7 +190,7 @@ class ChatServer:
         if session is not None:
             session.process_payload(data)
 
-    # ─────────────────────── Broadcast & Unicast ─────────────────
+    # ----------------------- Broadcast & Unicast -----------------
 
     def _broadcast(
         self,
@@ -198,12 +198,12 @@ class ChatServer:
         msg: dict,
         exclude: Optional[str] = None,
     ) -> None:
-        """Gửi message đến tất cả session đang active.
+        """Send message to all active authenticated sessions.
 
         Args:
-            sender: Username người gửi.
-            msg: Dict message.
-            exclude: Username cần loại trừ (thường là chính người gửi).
+            sender: Sender username.
+            msg: Message dict.
+            exclude: Username to exclude (typically the sender).
         """
         data: bytes = json.dumps(msg, ensure_ascii=False).encode("utf-8")
         with self._sessions_lock:
@@ -218,15 +218,15 @@ class ChatServer:
     def _unicast(
         self, sender: str, target_username: str, msg: dict
     ) -> bool:
-        """Gửi message trực tiếp đến một user cụ thể.
+        """Send message directly to a specific target user.
 
         Args:
-            sender: Username người gửi.
-            target_username: Username người nhận.
-            msg: Dict message.
+            sender: Sender username.
+            target_username: Target username.
+            msg: Message dict.
 
         Returns:
-            ``True`` nếu người nhận đang online.
+            ``True`` if recipient is online and delivered.
         """
         conn_id = self._user_to_conn.get(target_username)
         if conn_id is None:
@@ -243,10 +243,10 @@ class ChatServer:
         stream.write(data)
         return True
 
-    # ─────────────────────── Tick loop ───────────────────────
+    # ----------------------- Tick loop -----------------------
 
     def _tick_loop(self) -> None:
-        """Chạy tick cho tất cả connection trong background thread."""
+        """Execute tick for all connections in background thread."""
         while self._running:
             time.sleep(TICK_INTERVAL)
             with self._sessions_lock:
@@ -260,22 +260,22 @@ class ChatServer:
                     s = self._sessions.pop(cid, None)
                     if s and s.username:
                         self._user_to_conn.pop(s.username, None)
-                        logger.info("Session đóng: %s (conn_id=%d)", s.username, cid)
+                        logger.info("Session closed: %s (conn_id=%d)", s.username, cid)
 
-    # ─────────────────────── Cleanup ───────────────────────
+    # ----------------------- Cleanup -----------------------
 
     def _cleanup(self) -> None:
-        """Dọn dẹp tài nguyên khi server tắt."""
+        """Clean up resources on server shutdown."""
         self._running = False
         if self._sel:
             self._sel.close()
         if self._sock:
             self._sock.close()
-        logger.info("Server đã tắt.")
+        logger.info("Server stopped.")
 
 
 def main() -> None:
-    """Hàm entry point để chạy server."""
+    """Main entry point to run server."""
     server = ChatServer()
     server.start_server()
 

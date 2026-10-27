@@ -1,8 +1,8 @@
 """
 transport/stream.py
 ~~~~~~~~~~~~~~~~~~~
-Ghép kênh (Multiplexing) và sắp xếp dữ liệu (reassembly)
-cho một luồng dữ liệu logic (Stream) bên trong một Connection.
+Multiplexing and in-order byte stream reassembly for a logical Stream
+within a Connection.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from common.constants import MAX_APP_PAYLOAD, FLAG_EOM
 
 
 class Stream:
-    """Quản lý một luồng dữ liệu logic (stream) trong Connection.
+    """Manages a logical byte stream within a Connection.
 
-    Mỗi Stream có một ID riêng, bộ đệm nhận, và con trỏ byte offset.
+    Each Stream has a unique stream ID, a receive buffer, and byte offset pointers.
     """
 
     def __init__(
@@ -24,39 +24,39 @@ class Stream:
         stream_id: int,
         send_callback: Optional[Callable[[int, int, bytes, int], None]] = None,
     ) -> None:
-        """Khởi tạo Stream.
+        """Initialize Stream.
 
         Args:
-            stream_id: Mã định danh luồng (uint16).
-            send_callback: Hàm callback ``(stream_id, offset, chunk, flags)``
-                           để gửi chunk qua Connection.
+            stream_id: Stream identifier (uint16).
+            send_callback: Callback function ``(stream_id, offset, chunk, flags)``
+                           to transmit chunks via the Connection.
         """
         self.stream_id: int = stream_id
         self._send_callback: Optional[Callable[[int, int, bytes, int], None]] = (
             send_callback
         )
 
-        # ── Phía gửi ──
+        # -- Sender side --
         self._write_offset: int = 0
         self._write_lock: threading.Lock = threading.Lock()
 
-        # ── Phía nhận ──
+        # -- Receiver side --
         self._recv_buffer: dict[int, bytes] = {}
         self._recv_lock: threading.Lock = threading.Lock()
         self._expected_offset: int = 0
         self._eom_offset: Optional[int] = None
         self._complete_messages: list[bytes] = []
 
-    # ─────────────────────── Gửi ───────────────────────
+    # ----------------------- Send -----------------------
 
     def write(self, data: bytes) -> int:
-        """Cắt dữ liệu thành chunk theo MTU, gán offset và gửi.
+        """Fragment data into chunks by MTU, assign offsets, and transmit.
 
         Args:
-            data: Dữ liệu ứng dụng cần gửi trên luồng này.
+            data: Application payload bytes to send on this stream.
 
         Returns:
-            Tổng số bytes đã đưa vào hàng đợi gửi.
+            Total number of bytes queued for transmission.
         """
         total_sent: int = 0
         with self._write_lock:
@@ -82,23 +82,23 @@ class Stream:
 
         return total_sent
 
-    # ─────────────────────── Nhận ───────────────────────
+    # ----------------------- Receive -----------------------
 
     def read_incoming(
         self, offset: int, data: bytes, is_eom: bool
     ) -> Optional[bytes]:
-        """Đưa chunk vào đúng vị trí offset trong bộ đệm.
+        """Place incoming chunk into its offset position in the receive buffer.
 
-        Chỉ trả về dữ liệu hoàn chỉnh khi nhận được cờ EOM
-        và tất cả các chunk trước đó đã có đủ.
+        Returns a complete message only when the EOM flag is received
+        and all preceding contiguous chunks have arrived without gaps.
 
         Args:
-            offset: Byte offset của chunk trong luồng.
-            data: Dữ liệu chunk nhận được.
-            is_eom: ``True`` nếu đây là chunk cuối cùng của message.
+            offset: Byte offset of the chunk within the stream.
+            data: Received chunk payload bytes.
+            is_eom: ``True`` if this is the final chunk of the message.
 
         Returns:
-            Dữ liệu message hoàn chỉnh hoặc ``None`` nếu chưa đủ.
+            Complete reassembled message bytes, or ``None`` if incomplete.
         """
         with self._recv_lock:
             self._recv_buffer[offset] = data
@@ -106,7 +106,7 @@ class Stream:
             if is_eom:
                 self._eom_offset = offset + len(data)
 
-            # Thử ghép lại message hoàn chỉnh
+            # Attempt to reassemble a complete message
             if self._eom_offset is not None:
                 assembled = self._try_assemble()
                 if assembled is not None:
@@ -116,10 +116,10 @@ class Stream:
         return None
 
     def _try_assemble(self) -> Optional[bytes]:
-        """Thử ghép tất cả chunk thành message hoàn chỉnh.
+        """Attempt to assemble all buffered chunks into a continuous message.
 
         Returns:
-            bytes nếu ghép được, None nếu còn thiếu chunk.
+            Reassembled message bytes if complete, or None if chunks are missing.
         """
         if self._eom_offset is None:
             return None
@@ -127,12 +127,12 @@ class Stream:
         parts: list[bytes] = []
         current: int = self._expected_offset
 
-        # Sắp xếp các offset đang có
+        # Sort available chunk offsets
         sorted_offsets = sorted(self._recv_buffer.keys())
 
         for off in sorted_offsets:
             if off != current:
-                # Còn lỗ – chưa đủ dữ liệu
+                # Gap detected – missing data
                 return None
             chunk = self._recv_buffer[off]
             parts.append(chunk)
@@ -141,7 +141,7 @@ class Stream:
         if current < self._eom_offset:
             return None
 
-        # Ghép thành công – dọn dẹp
+        # Reassembly successful – cleanup and advance pointer
         result: bytes = b"".join(parts)
         self._recv_buffer.clear()
         self._expected_offset = current
@@ -149,10 +149,10 @@ class Stream:
         return result
 
     def get_complete_messages(self) -> list[bytes]:
-        """Lấy và xóa tất cả message đã hoàn chỉnh.
+        """Retrieve and clear all reassembled complete messages.
 
         Returns:
-            Danh sách các message hoàn chỉnh đã nhận.
+            List of complete message byte arrays.
         """
         with self._recv_lock:
             msgs = list(self._complete_messages)

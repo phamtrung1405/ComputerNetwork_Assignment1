@@ -2,7 +2,7 @@
 chcp 65001 > nul
 title StreamChat Admin Portal Launcher
 echo ========================================================
-echo   Khoi chay Web Admin StreamChat (Quan ly User)
+echo   Starting StreamChat Web Admin Portal (User Management)
 echo ========================================================
 
 cd /d "%~dp0"

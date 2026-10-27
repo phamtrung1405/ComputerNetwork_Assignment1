@@ -1,8 +1,8 @@
 """
 database.py
 ~~~~~~~~~~~
-Module quản lý cơ sở dữ liệu người dùng bằng SQLite.
-Hỗ trợ tạo bảng, khởi tạo dữ liệu mẫu, thêm người dùng và xác thực.
+User database management module using SQLite.
+Supports table creation, seed sample users, adding users, and authentication.
 """
 
 from __future__ import annotations
@@ -14,25 +14,25 @@ import sqlite3
 from typing import Optional
 
 
-# Đường dẫn mặc định tới file users.db trong thư mục dự án
+# Default path to users.db in the project root directory
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "users.db"
 
 
 class UserDatabase:
-    """Quản lý kết nối và truy vấn SQLite cho người dùng."""
+    """Manages SQLite connections and queries for user authentication."""
 
     def __init__(self, db_path: Optional[str | Path] = None) -> None:
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Tạo kết nối đến SQLite database."""
+        """Create a connection to the SQLite database."""
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self) -> None:
-        """Khởi tạo bảng users và nạp tài khoản mẫu ban đầu nếu bảng rỗng."""
+        """Initialize the users table and seed default sample accounts if empty."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -44,7 +44,7 @@ class UserDatabase:
                 );
             """)
 
-            # Kiểm tra xem đã có dữ liệu chưa
+            # Check if any users exist
             cursor.execute("SELECT COUNT(*) FROM users;")
             count = cursor.fetchone()[0]
 
@@ -53,14 +53,14 @@ class UserDatabase:
             conn.commit()
 
     def _seed_default_users(self, cursor: sqlite3.Cursor) -> None:
-        """Nạp các tài khoản mẫu ban đầu."""
+        """Seed initial default sample user accounts."""
         sample_users = [
             ("alice", hashlib.sha256(b"password123").hexdigest()),
             ("bob", hashlib.sha256(b"secret456").hexdigest()),
             ("charlie", hashlib.sha256(b"hello789").hexdigest()),
             ("demo", hashlib.sha256(b"demo").hexdigest()),
         ]
-        # Thêm user1..user50
+        # Add user1..user50
         for i in range(1, 51):
             sample_users.append(
                 (f"user{i}", hashlib.sha256(b"password123").hexdigest())
@@ -72,13 +72,13 @@ class UserDatabase:
         )
 
     def get_password_hash(self, username: str) -> Optional[str]:
-        """Lấy password_hash của một username.
+        """Get password_hash for a given username.
 
         Args:
-            username: Tên tài khoản.
+            username: Account username.
 
         Returns:
-            password_hash nếu tồn tại, ngược lại None.
+            password_hash if user exists, otherwise None.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -92,27 +92,27 @@ class UserDatabase:
         return None
 
     def verify_user(self, username: str, password_hash: str) -> bool:
-        """Kiểm tra thông tin đăng nhập.
+        """Verify user login credentials.
 
         Args:
-            username: Tên tài khoản.
-            password_hash: Mã băm SHA-256 của mật khẩu.
+            username: Account username.
+            password_hash: SHA-256 hash of password.
 
         Returns:
-            True nếu hợp lệ, ngược lại False.
+            True if credentials match, False otherwise.
         """
         expected = self.get_password_hash(username)
         return expected is not None and expected == password_hash
 
     def add_user(self, username: str, raw_password: str) -> bool:
-        """Thêm người dùng mới vào database (tiện ích mở rộng).
+        """Add a new user to the database.
 
         Args:
-            username: Tên người dùng.
-            raw_password: Mật khẩu dạng rõ (sẽ được hash SHA-256).
+            username: Username.
+            raw_password: Plain text password (will be SHA-256 hashed).
 
         Returns:
-            True nếu thêm thành công, False nếu username đã tồn tại.
+            True if added successfully, False if username already exists.
         """
         p_hash = hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
         try:
@@ -128,5 +128,5 @@ class UserDatabase:
             return False
 
 
-# Singleton instance dùng chung trong server
+# Singleton shared instance
 db = UserDatabase()

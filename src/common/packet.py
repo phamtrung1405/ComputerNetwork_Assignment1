@@ -1,8 +1,8 @@
 """
 common/packet.py
 ~~~~~~~~~~~~~~~~
-Đóng gói (pack) và bóc tách (unpack) cấu trúc nhị phân 22-byte
-của Header giao thức truyền tải tùy chỉnh.
+Pack and unpack 22-byte binary structure
+of custom transport protocol Header.
 
 Header Layout (22 bytes, big-endian):
     ┌──────────┬──────────┬──────────┬───────┬───────────┬────────┬─────────────┬──────────┐
@@ -22,11 +22,11 @@ from typing import NamedTuple
 _HEADER_FMT: str = "!BIIBHIHI"
 _HEADER_SIZE: int = struct.calcsize(_HEADER_FMT)
 
-assert _HEADER_SIZE == 22, f"Header phải 22 bytes, hiện tại {_HEADER_SIZE}"
+assert _HEADER_SIZE == 22, f"Header must have 22 bytes, current is {_HEADER_SIZE}"
 
 
 class Header(NamedTuple):
-    """Biểu diễn header đã bóc tách."""
+    """Represents unpacked header metadata."""
     msg_type: int
     conn_id: int
     seq_num: int
@@ -46,19 +46,19 @@ def pack(
     offset: int,
     payload: bytes,
 ) -> bytes:
-    """Ghép các tham số thành chuỗi byte hoàn chỉnh (Header + Payload).
+    """Pack parameters into a complete byte sequence (Header + Payload).
 
     Args:
-        msg_type: Loại gói tin (PKT_DATA, PKT_ACK, …).
-        conn_id: Định danh kết nối (uint32).
-        seq_num: Số thứ tự gói tin (uint32).
-        flags: Cờ điều khiển (bitmask uint8).
-        stream_id: Mã luồng dữ liệu (uint16).
-        offset: Byte offset trong luồng (uint32).
-        payload: Dữ liệu ứng dụng đính kèm.
+        msg_type: Packet type (PKT_DATA, PKT_ACK, ...).
+        conn_id: Connection identifier (uint32).
+        seq_num: Packet sequence number (uint32).
+        flags: Control flags (bitmask uint8).
+        stream_id: Data stream ID (uint16).
+        offset: Byte offset within stream (uint32).
+        payload: Attached application payload data.
 
     Returns:
-        bytes: Chuỗi bytes gồm 22-byte header nối với payload.
+        bytes: Byte sequence containing 22-byte header concatenated with payload.
     """
     payload_len: int = len(payload)
     header_bytes: bytes = struct.pack(
@@ -76,21 +76,21 @@ def pack(
 
 
 def unpack(raw_bytes: bytes) -> tuple[Header, bytes]:
-    """Bóc tách 22 bytes đầu tiên để lấy metadata, trả về Header và Payload.
+    """Unpack first 22 bytes to extract metadata, returning Header and Payload.
 
     Args:
-        raw_bytes: Dữ liệu thô nhận từ socket (>= 22 bytes).
+        raw_bytes: Raw data received from socket (>= 22 bytes).
 
     Returns:
-        Tuple gồm Header (NamedTuple) và phần payload còn lại.
+        Tuple of Header (NamedTuple) and remaining payload data.
 
     Raises:
-        ValueError: Khi dữ liệu nhỏ hơn kích thước header tối thiểu.
+        ValueError: When raw data is smaller than minimum header size.
     """
     if len(raw_bytes) < _HEADER_SIZE:
         raise ValueError(
-            f"Dữ liệu quá ngắn: cần ít nhất {_HEADER_SIZE} bytes, "
-            f"nhận được {len(raw_bytes)} bytes."
+            f"Data too short: requires at least {_HEADER_SIZE} bytes, "
+            f"received {len(raw_bytes)} bytes."
         )
     fields = struct.unpack(_HEADER_FMT, raw_bytes[:_HEADER_SIZE])
     header = Header(

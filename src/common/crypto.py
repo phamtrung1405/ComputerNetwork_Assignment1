@@ -1,15 +1,10 @@
 """
 common/crypto.py
 ~~~~~~~~~~~~~~~~
-Lớp mật mã học bảo mật tầng truyền tải (Transport Security Layer) cho STREAMCHAT.
+Security layer: X25519 key exchange, HKDF session key derivation,
+and AES-256-GCM authenticated encryption/decryption.
 
-Hiện thực hóa:
-- Trao đổi khóa bất đối xứng Diffie-Hellman trên đường cong elliptic Curve25519 (X25519).
-- Dẫn xuất khóa phiên đối xứng (HKDF-SHA256) với hỗ trợ khóa ghi hai chiều (Directional Subkeys).
-- Mã hóa và giải mã dữ liệu có xác thực (AEAD) bằng chuẩn AES-256-GCM.
-- Phòng chống tái sử dụng Nonce (Nonce Reuse Protection) và ràng buộc Header làm Authenticated Additional Data (AAD).
-
-Sử dụng thư viện chuẩn công nghiệp ``cryptography``.
+Uses the ``cryptography`` library (install via ``pip install cryptography``).
 """
 
 from __future__ import annotations
@@ -94,17 +89,10 @@ def _construct_nonce(packet_num: int, is_server: Optional[bool] = None) -> bytes
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_keypair() -> tuple[X25519PrivateKey, bytes]:
-    """Tạo cặp khóa bất đối xứng X25519 cho quá trình Handshake trao đổi khóa ECDH.
-
-    Thuật toán:
-    - Sinh khóa riêng ngẫu nhiên an toàn mật mã học (cryptographically secure random)
-      trên đường cong Elliptic Curve25519.
-    - Trích xuất khóa công khai tương ứng dưới dạng 32 raw bytes (không dùng định dạng ASN.1/DER).
+    """Generate an X25519 keypair for the Handshake process.
 
     Returns:
-        Tuple gồm:
-        - `X25519PrivateKey`: Đối tượng khóa riêng tư (phải được giữ bí mật tại endpoint).
-        - `bytes`: 32 bytes khóa công khai sẵn sàng gửi qua gói tin PKT_HELLO / PKT_HELLO_ACK.
+        Tuple containing the private key object and raw 32-byte public key.
     """
     private_key: X25519PrivateKey = X25519PrivateKey.generate()
     public_bytes: bytes = private_key.public_key().public_bytes(
@@ -120,28 +108,14 @@ def derive_shared_secret(
     salt: Optional[bytes] = None,
     info: bytes = b"streaming-protocol-session-key",
 ) -> bytes:
-    """Dẫn xuất khóa phiên đối xứng AES-256 từ khóa riêng và khóa công khai của đối tác.
-
-    Thuật toán:
-    1. Kiểm tra tính hợp lệ của tham số đầu vào (loại dữ liệu, kích thước khóa đối tác = 32B).
-    2. Khôi phục đối tượng `X25519PublicKey` từ mảng 32 bytes thô.
-    3. Thực hiện phép nhân điểm trên đường cong Elliptic Diffie-Hellman (ECDH) để tìm
-       điểm bí mật chung 32 bytes (`shared_raw = private_key.exchange(...)`).
-    4. Sử dụng thuật toán HKDF (HMAC-based Extract-and-Expand Key Derivation Function, RFC 5869)
-       với hàm băm SHA-256 để trích xuất khóa đối xứng AES-256 có độ ngẫu nhiên cao.
+    """Derive a 256-bit AES session key using ECDH + HKDF.
 
     Args:
-        private_key: Khóa riêng X25519 của endpoint hiện tại.
-        peer_public_bytes: 32 bytes khóa công khai nhận từ endpoint đối tác.
-        salt: Chuỗi byte muối tùy chọn (mặc định None theo đặc tả giao thức).
-        info: Ngữ cảnh ràng buộc ứng dụng (mặc định b"streaming-protocol-session-key").
+        private_key: Local X25519 private key.
+        peer_public_bytes: 32 bytes of peer's public key.
 
     Returns:
-        32 bytes khóa đối xứng AES-256 dùng chung.
-
-    Raises:
-        TypeError: Nếu kiểu dữ liệu của `private_key` hoặc `peer_public_bytes` không hợp lệ.
-        ValueError: Nếu độ dài của `peer_public_bytes` khác 32 bytes hoặc khóa bị suy biến.
+        32-byte shared symmetric AES-256 session key.
     """
     if not isinstance(private_key, X25519PrivateKey):
         raise TypeError(f"private_key phải là thể hiện X25519PrivateKey, nhận được {type(private_key)}")
@@ -168,96 +142,16 @@ def derive_shared_secret(
     return session_key
 
 
-def derive_session_keys(
-    private_key: X25519PrivateKey,
-    peer_public_bytes: bytes,
-    salt: Optional[bytes] = None,
-) -> tuple[bytes, bytes]:
-    """Dẫn xuất hai khóa phiên ghi riêng biệt (Directional Subkeys) cho Client và Server.
-
-    Theo chuẩn thiết kế an toàn của TLS 1.3 và QUIC:
-    - `client_write_key`: Dùng cho Client mã hóa gửi lên Server (Server dùng để giải mã).
-    - `server_write_key`: Dùng cho Server mã hóa gửi xuống Client (Client dùng để giải mã).
-    Việc sử dụng 2 khóa độc lập triệt tiêu hoàn toàn nguy cơ trùng lặp cặp (Key, Nonce)
-    giữa hai chiều truyền dữ liệu.
+def encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes:
+    """Encrypt payload using AES-256-GCM.
 
     Args:
-        private_key: Khóa riêng X25519 của endpoint hiện tại.
-        peer_public_bytes: 32 bytes khóa công khai của bên kia.
-        salt: Chuỗi byte muối tùy chọn.
+        payload: Application payload to encrypt.
+        session_key: 32-byte symmetric session key.
+        packet_num: Packet sequence number used as 96-bit unique nonce.
 
     Returns:
-        Tuple gồm `(client_write_key, server_write_key)` — mỗi khóa có độ dài 32 bytes.
-    """
-    if not isinstance(private_key, X25519PrivateKey):
-        raise TypeError(f"private_key phải là thể hiện X25519PrivateKey, nhận được {type(private_key)}")
-
-    if not isinstance(peer_public_bytes, (bytes, bytearray)):
-        raise TypeError(f"peer_public_bytes phải là bytes, nhận được {type(peer_public_bytes)}")
-
-    if len(peer_public_bytes) != X25519_KEY_SIZE:
-        raise ValueError(
-            f"peer_public_bytes phải có độ dài chính xác {X25519_KEY_SIZE} bytes, "
-            f"nhận được: {len(peer_public_bytes)} bytes."
-        )
-
-    peer_public_key: X25519PublicKey = X25519PublicKey.from_public_bytes(bytes(peer_public_bytes))
-    shared_raw: bytes = private_key.exchange(peer_public_key)
-
-    hkdf_client = HKDF(
-        algorithm=hashes.SHA256(),
-        length=AES_KEY_SIZE,
-        salt=salt,
-        info=b"streamchat-client-write-key",
-    )
-    client_write_key: bytes = hkdf_client.derive(shared_raw)
-
-    hkdf_server = HKDF(
-        algorithm=hashes.SHA256(),
-        length=AES_KEY_SIZE,
-        salt=salt,
-        info=b"streamchat-server-write-key",
-    )
-    server_write_key: bytes = hkdf_server.derive(shared_raw)
-
-    return client_write_key, server_write_key
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Mã hóa & Giải mã AES-256-GCM (Authenticated Encryption with Associated Data)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def encrypt(
-    payload: bytes,
-    session_key: bytes,
-    packet_num: int,
-    associated_data: Optional[bytes] = None,
-    is_server: Optional[bool] = None,
-) -> bytes:
-    """Mã hóa và tạo mã xác thực toàn vẹn (AEAD) bằng thuật toán AES-256-GCM.
-
-    Thuật toán:
-    1. Kiểm tra tính hợp lệ của tham số đầu vào (payload, session_key = 32B, packet_num >= 0).
-    2. Xây dựng Nonce 12-byte duy nhất từ `packet_num` (và `is_server` nếu có).
-    3. Kiểm tra tính duy nhất của Nonce đối với `session_key` hiện hành; ném `ValueError`
-       nếu phát hiện hành vi tái sử dụng Nonce (chống phá vỡ tính bảo mật của AES-GCM).
-    4. Thực hiện mã hóa AES-GCM, tự động đính kèm 16 bytes Authentication Tag vào cuối ciphertext.
-       Nếu `associated_data` được cung cấp (ví dụ 22 bytes Header), dữ liệu này được xác thực
-       tính toàn vẹn nhưng không bị mã hóa.
-
-    Args:
-        payload: Dữ liệu ứng dụng cần mã hóa (dạng bytes hoặc bytearray).
-        session_key: Khóa phiên đối xứng 32 bytes (AES-256).
-        packet_num: Số thứ tự gói tin (dùng làm cơ sở tạo Nonce).
-        associated_data: Dữ liệu bổ sung cần bảo vệ tính toàn vẹn (AAD, ví dụ: 22-byte Header).
-        is_server: Cờ định hướng vai trò gửi (True nếu Server, False nếu Client).
-
-    Returns:
-        bytes: Chuỗi nhị phân gồm `ciphertext || authentication_tag` (tag 16 bytes gắn ở cuối).
-
-    Raises:
-        TypeError: Nếu `payload`, `session_key` hoặc `associated_data` không phải kiểu bytes.
-        ValueError: Nếu độ dài khóa khác 32 bytes, số thứ tự âm, hoặc phát hiện Nonce bị tái sử dụng.
+        bytes: ciphertext || tag (16-byte authentication tag appended by AESGCM).
     """
     if not isinstance(payload, (bytes, bytearray)):
         raise TypeError(f"payload phải là bytes hoặc bytearray, nhận được {type(payload)}")
@@ -295,37 +189,19 @@ def encrypt(
     return ciphertext
 
 
-def decrypt(
-    ciphertext: bytes,
-    session_key: bytes,
-    packet_num: int,
-    associated_data: Optional[bytes] = None,
-    is_server: Optional[bool] = None,
-) -> bytes:
-    """Xác thực tính toàn vẹn và giải mã gói tin mã hóa AES-256-GCM.
-
-    Thuật toán:
-    1. Kiểm tra tính hợp lệ của dữ liệu đầu vào.
-    2. Xác minh độ dài tối thiểu của ciphertext: bắt buộc >= 16 bytes (Authentication Tag).
-    3. Tái tạo Nonce 12-byte khớp chính xác với Nonce phía gửi đã sử dụng.
-    4. Sử dụng `AESGCM.decrypt()` thực hiện giải mã và đối soát Authentication Tag.
-       Nếu dữ liệu bị biến đổi dù chỉ 1 bit (hoặc AAD không khớp), thư viện sẽ bắn ngoại lệ
-       `cryptography.exceptions.InvalidTag`.
+def decrypt(ciphertext: bytes, session_key: bytes, packet_num: int) -> bytes:
+    """Decrypt and verify packet integrity with AES-256-GCM.
 
     Args:
-        ciphertext: Dữ liệu đã mã hóa (bao gồm 16 bytes Tag ở cuối).
-        session_key: Khóa phiên đối xứng 32 bytes (phải khớp với bên gửi).
-        packet_num: Số thứ tự gói tin dùng để khôi phục Nonce.
-        associated_data: Dữ liệu bổ sung AAD cần đối soát toàn vẹn (ví dụ Header 22-byte).
-        is_server: Cờ định hướng vai trò gửi (phải khớp với bên đã mã hóa).
+        ciphertext: Encrypted payload (including 16-byte authentication tag).
+        session_key: 32-byte symmetric session key.
+        packet_num: Packet sequence number used to reconstruct nonce.
 
     Returns:
-        bytes: Bản rõ (Plaintext) nguyên gốc sau khi giải mã thành công.
+        bytes: Original decrypted plaintext payload.
 
     Raises:
-        TypeError: Nếu `ciphertext`, `session_key` hoặc `associated_data` sai kiểu dữ liệu.
-        ValueError: Nếu ciphertext ngắn hơn 16 bytes hoặc độ dài khóa khác 32 bytes.
-        InvalidTag: Khi tính toàn vẹn bị vi phạm (dữ liệu bị giả mạo, sai khóa, hoặc sai Nonce/AAD).
+        cryptography.exceptions.InvalidTag: If authentication or integrity check fails.
     """
     if not isinstance(ciphertext, (bytes, bytearray)):
         raise TypeError(f"ciphertext phải là bytes hoặc bytearray, nhận được {type(ciphertext)}")

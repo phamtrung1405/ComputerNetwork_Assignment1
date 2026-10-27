@@ -2,7 +2,7 @@
 chcp 65001 > nul
 title StreamChat Launcher
 echo ========================================================
-echo   Khoi chay toan bo he thong StreamChat (Server + Clients)
+echo   Launching full StreamChat system (Server + Clients)
 echo ========================================================
 
 cd /d "%~dp0"
@@ -26,34 +26,34 @@ if exist ".venv\Scripts\python.exe" set "VENV_PYTHON=.venv\Scripts\python.exe"
 if exist ".venv\bin\python.exe" set "VENV_PYTHON=.venv\bin\python.exe"
 
 if "%VENV_PYTHON%"=="" (
-    echo [Launcher] Chua tim thay moi truong ao .venv. Dang tao .venv...
+    echo [Launcher] Virtual environment .venv not found. Creating .venv...
     %PY_CMD% -m venv .venv
     if errorlevel 1 (
-        echo [Launcher] Loi: Khong the tao moi truong ao .venv. Vui long kiem tra lai Python!
+        echo [Launcher] Error: Failed to create virtual environment .venv. Please check Python installation!
         pause
         exit /b 1
     )
     if exist ".venv\Scripts\python.exe" set "VENV_PYTHON=.venv\Scripts\python.exe"
     if exist ".venv\bin\python.exe" set "VENV_PYTHON=.venv\bin\python.exe"
-    echo [Launcher] Tao .venv thanh cong!
+    echo [Launcher] Successfully created .venv!
 )
 
 if "%VENV_PYTHON%"=="" (
-    echo [Launcher] Loi: Khong tim thay python.exe trong .venv\Scripts hoac .venv\bin!
+    echo [Launcher] Error: python.exe not found in .venv\Scripts or .venv\bin!
     pause
     exit /b 1
 )
 
-echo [Launcher] Dang kiem tra va cai dat thu vien tu requirements.txt...
+echo [Launcher] Checking and installing dependencies from requirements.txt...
 "%VENV_PYTHON%" -m pip install --upgrade pip
 "%VENV_PYTHON%" -m pip install -r requirements.txt
 if errorlevel 1 (
-    echo [Launcher] Loi khi cai dat thu vien!
-    echo [Launcher] Vui long kiem tra lai cac thu vien can thiet!
+    echo [Launcher] Error installing dependencies!
+    echo [Launcher] Please check required packages!
     pause
     exit /b 1
 )
 
-echo [Launcher] Bat dau chay he thong...
+echo [Launcher] Starting system...
 "%VENV_PYTHON%" run_all.py %*
 pause

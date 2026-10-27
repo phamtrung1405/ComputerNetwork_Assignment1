@@ -1,10 +1,10 @@
 """
 server/session.py
 ~~~~~~~~~~~~~~~~~
-Quản lý logic tầng ứng dụng cho từng Client kết nối đến Server.
+Application layer session management for each client connected to the server.
 
-Mỗi Session tương ứng với một Connection UDP và giữ trạng thái
-xác thực, username, và chuyển tiếp tin nhắn.
+Each Session corresponds to a UDP Connection and maintains authentication
+state, username, and message routing.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import socket
+import time
 from typing import Optional, Callable
 
 from transport.connection import Connection
@@ -22,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 class Session:
-    """Quản lý phiên làm việc của một client trên server.
+    """Manages the session state of a client on the server.
 
-    Giữ trạng thái đăng nhập, xử lý payload ứng dụng (AUTH, MSG, FILE)
-    và chuyển tiếp tin nhắn giữa các session.
+    Maintains login state, processes application payloads (AUTH, MSG, FILE),
+    and routes messages between sessions.
     """
 
     def __init__(
@@ -33,18 +34,18 @@ class Session:
         conn_id: int,
         client_addr: tuple[str, int],
         connection: Connection,
-        broadcast_fn: Optional[Callable[[str, dict[str, object]], str | None], None] = None,
+        broadcast_fn: Optional[Callable[[str, dict[str, object], Optional[str]], None]] = None,
         unicast_fn: Optional[Callable[[str, str, dict[str, object]], bool]] = None,
     ) -> None:
-        """Khởi tạo Session.
+        """Initialize Session.
 
         Args:
-            conn_id: Định danh kết nối.
-            client_addr: Địa chỉ ``(host, port)`` của client.
-            connection: Đối tượng Connection tương ứng.
-            broadcast_fn: Hàm callback để gửi broadcast
+            conn_id: Connection identifier.
+            client_addr: Address ``(host, port)`` of the client.
+            connection: Associated Connection instance.
+            broadcast_fn: Callback to broadcast
                           ``(sender_username, msg_dict, exclude_username) -> None``.
-            unicast_fn: Hàm callback để gửi unicast
+            unicast_fn: Callback for unicast
                         ``(sender, target, msg_dict) -> bool``.
         """
         self.conn_id: int = conn_id
@@ -55,23 +56,24 @@ class Session:
         self._broadcast_fn: Optional[Callable] = broadcast_fn
         self._unicast_fn: Optional[Callable] = unicast_fn
 
-    # ─────────────────────── Xử lý payload ───────────────────────
+    # ----------------------- Payload processing -----------------------
 
     def process_payload(self, app_msg: bytes) -> None:
-        """Phân tích JSON payload và quyết định xử lý.
+        """Parse JSON payload and dispatch handling.
 
-        Các loại payload hỗ trợ:
-        - ``AUTH``: Yêu cầu đăng nhập.
-        - ``MSG``: Tin nhắn chat (broadcast hoặc unicast).
-        - ``FILE``: Thông báo truyền file.
+        Supported payload types:
+        - ``AUTH``: Login request.
+        - ``MSG``: Chat message (broadcast or unicast).
+        - ``FILE``: File transfer metadata.
+        - ``FILE_DATA``: File chunk data.
 
         Args:
-            app_msg: Dữ liệu ứng dụng (bytes) – JSON encoded.
+            app_msg: Application payload bytes (JSON encoded).
         """
         try:
             msg: dict = json.loads(app_msg.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            logger.warning("Payload JSON lỗi từ %s: %s", self.client_addr, exc)
+            logger.warning("Corrupted JSON payload from %s: %s", self.client_addr, exc)
             return
 
         msg_type: str = msg.get("type", "")
@@ -85,15 +87,15 @@ class Session:
         elif msg_type == "FILE_DATA":
             self._process_file_data(msg)
         else:
-            logger.debug("Loại message không xác định: %s", msg_type)
+            logger.debug("Unknown message type: %s", msg_type)
 
-    # ─────────────────────── Auth ───────────────────────
+    # ----------------------- Auth -----------------------
 
     def _process_auth(self, msg: dict) -> None:
-        """Xử lý yêu cầu xác thực.
+        """Process authentication request.
 
         Args:
-            msg: Dict chứa ``username`` và ``password_hash``.
+            msg: Dict containing ``username`` and ``password_hash``.
         """
         username: str = msg.get("username", "")
         password_hash: str = msg.get("password_hash", "")
@@ -105,49 +107,49 @@ class Session:
             "username": username,
         }
         if success:
-            response["message"] = f"Chào mừng {username}!"
-            # Thông báo broadcast
+            response["message"] = f"Welcome {username}!"
+            # Broadcast join notice
             if self._broadcast_fn is not None:
                 join_msg: dict = {
                     "type": "SYSTEM",
-                    "message": f"{username} đã tham gia phòng chat.",
+                    "message": f"{username} joined the chat room.",
                 }
                 self._broadcast_fn(username, join_msg, username)
         else:
-            response["message"] = "Tên đăng nhập hoặc mật khẩu không đúng."
+            response["message"] = "Invalid username or password."
 
         self._send_app_message(response)
 
     def verify_auth(self, username: str, password_hash: str) -> bool:
-        """So sánh thông tin xác thực với cơ sở dữ liệu SQLite.
+        """Verify credentials against SQLite database.
 
         Args:
-            username: Tên người dùng.
-            password_hash: SHA-256 hash của mật khẩu.
+            username: Username string.
+            password_hash: SHA-256 hash of password.
 
         Returns:
-            ``True`` nếu xác thực thành công.
+            ``True`` if authentication succeeds.
         """
         if db.verify_user(username, password_hash):
             self.username = username
             self.authenticated = True
-            logger.info("Xác thực thành công: %s", username)
+            logger.info("Authentication succeeded: %s", username)
             return True
-        logger.warning("Xác thực thất bại: %s", username)
+        logger.warning("Authentication failed: %s", username)
         return False
 
-    # ─────────────────────── Chat ───────────────────────
+    # ----------------------- Chat -----------------------
 
     def _process_msg(self, msg: dict) -> None:
-        """Xử lý tin nhắn chat.
+        """Process chat message.
 
         Args:
-            msg: Dict chứa ``target`` (``"all"`` hoặc username) và ``text``.
+            msg: Dict containing ``target`` (``"all"`` or username) and ``text``.
         """
         if not self.authenticated:
             self._send_app_message({
                 "type": "ERROR",
-                "message": "Bạn chưa đăng nhập.",
+                "message": "You are not logged in.",
             })
             return
 
@@ -158,7 +160,7 @@ class Session:
             "type": "MSG",
             "from": self.username,
             "text": text,
-            "timestamp": __import__("time").time(),
+            "timestamp": time.time(),
         }
 
         if target == "all":
@@ -167,15 +169,15 @@ class Session:
             self.route_unicast(target, chat_msg)
 
     def _process_file(self, msg: dict) -> None:
-        """Xử lý thông báo bắt đầu truyền file.
+        """Process file transfer start notification.
 
         Args:
-            msg: Dict chứa ``filename``, ``size``, ``sha256``, ``target``.
+            msg: Dict containing ``filename``, ``size``, ``sha256``, ``target``.
         """
         if not self.authenticated:
             self._send_app_message({
                 "type": "ERROR",
-                "message": "Bạn chưa đăng nhập.",
+                "message": "You are not logged in.",
             })
             return
 
@@ -194,10 +196,10 @@ class Session:
             self.route_unicast(target, file_info)
 
     def _process_file_data(self, msg: dict) -> None:
-        """Chuyển tiếp dữ liệu file chunk.
+        """Forward file chunk data.
 
         Args:
-            msg: Dict chứa dữ liệu chunk file.
+            msg: Dict containing file chunk data.
         """
         target: str = msg.get("target", "all")
         if target == "all":
@@ -205,13 +207,13 @@ class Session:
         else:
             self.route_unicast(target, msg)
 
-    # ─────────────────────── Routing ───────────────────────
+    # ----------------------- Routing -----------------------
 
     def route_broadcast(self, msg: dict) -> None:
-        """Chuyển tiếp tin nhắn đến tất cả Session đang active.
+        """Forward message to all active sessions.
 
         Args:
-            msg: Dict message cần gửi.
+            msg: Dict message to broadcast.
         """
         if self._broadcast_fn is not None:
             self._broadcast_fn(
@@ -221,11 +223,11 @@ class Session:
             )
 
     def route_unicast(self, target_username: str, msg: dict) -> None:
-        """Định tuyến dữ liệu trực tiếp đến người nhận.
+        """Route message directly to recipient.
 
         Args:
-            target_username: Tên người nhận.
-            msg: Dict message cần gửi.
+            target_username: Recipient username.
+            msg: Dict message to send.
         """
         if self._unicast_fn is not None:
             success: bool = self._unicast_fn(
@@ -236,16 +238,16 @@ class Session:
             if not success:
                 self._send_app_message({
                     "type": "ERROR",
-                    "message": f"Người dùng '{target_username}' không trực tuyến.",
+                    "message": f"User '{target_username}' is offline.",
                 })
 
-    # ─────────────────────── Tiện ích ───────────────────────
+    # ----------------------- Utilities -----------------------
 
     def _send_app_message(self, msg: dict) -> None:
-        """Gửi một JSON message đến client qua Stream 0.
+        """Send a JSON message to client over Stream 0.
 
         Args:
-            msg: Dict cần gửi.
+            msg: Dict payload to send.
         """
         stream = self.connection.get_or_create_stream(0)
         data: bytes = json.dumps(msg, ensure_ascii=False).encode("utf-8")

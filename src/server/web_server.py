@@ -1,15 +1,15 @@
 """
 server/web_server.py
 ~~~~~~~~~~~~~~~~~~~~
-Máy chủ Web HTTP và Server-Sent Events (SSE) tích hợp trên một cổng duy nhất (mặc định 8080)
-sử dụng raw TCP socket theo kiến trúc Client-Server chuẩn.
+Unified HTTP Web and Server-Sent Events (SSE) server on a single port (default 8080)
+using raw TCP sockets following standard Client-Server architecture.
 
-Đặc điểm tuân thủ 100% quy định môn học:
-- Không sử dụng framework ngoài (Flask, Django, FastAPI) và KHÔNG dùng WebSocket.
-- Sử dụng Raw TCP Socket (socket.SOCK_STREAM) thuần túy để phân tích cú pháp HTTP/1.1.
-- Truyền nhận tin nhắn và trạng thái thời gian thực thông qua chuẩn Server-Sent Events (SSE / text-event-stream).
-- Quản lý đồng thời hàng trăm phiên người dùng độc lập trên cùng một địa chỉ:cổng.
-- Hỗ trợ phòng chat chung (Broadcast), chat riêng tư (Unicast) và truyền tệp tin nhị phân.
+Key characteristics:
+- No external frameworks (Flask, Django, FastAPI) and NO WebSocket library.
+- Pure Raw TCP Socket (socket.SOCK_STREAM) for parsing HTTP/1.1 requests.
+- Real-time event streaming via Server-Sent Events (SSE / text-event-stream).
+- Concurrently manages multiple independent client sessions on the same host:port.
+- Supports public chat room (Broadcast), private messaging (Unicast), and binary file transfer.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from server.database import db as user_db
 
 logger = logging.getLogger(__name__)
 
-# Thư mục gốc dự án và các thư mục tĩnh / upload
+# Project root and static / upload asset directories
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 STATIC_DIR = Path(__file__).resolve().parent.parent / "client" / "static"
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
@@ -39,7 +39,7 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class SSEClient:
-    """Đại diện cho một kết nối Server-Sent Events qua HTTP/1.1 từ trình duyệt."""
+    """Represents an active Server-Sent Events connection over HTTP/1.1 from a browser."""
 
     def __init__(self, sock: socket.socket, addr: Tuple[str, int], username: str) -> None:
         self.sock = sock
@@ -50,7 +50,7 @@ class SSEClient:
         self.is_closed = False
 
     def send_event(self, data: dict) -> bool:
-        """Gửi thông điệp JSON qua dòng SSE format: data: {...}\n\n."""
+        """Send a JSON payload formatted as an SSE stream event: data: {...}\n\n."""
         if self.is_closed:
             return False
         try:
@@ -63,7 +63,7 @@ class SSEClient:
             return False
 
     def send_heartbeat(self) -> bool:
-        """Gửi comment SSE định kỳ để giữ kết nối HTTP keep-alive."""
+        """Send periodic SSE comment to keep the HTTP keep-alive connection active."""
         if self.is_closed:
             return False
         try:
@@ -75,7 +75,7 @@ class SSEClient:
             return False
 
     def close(self) -> None:
-        """Đóng kết nối SSE client một cách an toàn."""
+        """Safely close the SSE client connection."""
         if not self.is_closed:
             self.is_closed = True
             try:
@@ -85,7 +85,7 @@ class SSEClient:
 
 
 class UnifiedChatServer:
-    """Máy chủ HTTP + Server-Sent Events (SSE) tập trung trên cổng 8080."""
+    """Central HTTP + Server-Sent Events (SSE) server on port 8080."""
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8080) -> None:
         self.host = host
@@ -93,16 +93,16 @@ class UnifiedChatServer:
         self.running = False
         self.sock: Optional[socket.socket] = None
 
-        # Quản lý các client SSE đang hoạt động: SSEClient
+        # Manage active SSE clients: Set[SSEClient]
         self._clients: Set[SSEClient] = set()
         self._clients_lock = threading.Lock()
 
-        # Quản lý tệp tin tải lên: file_id -> info
+        # Manage uploaded files registry: file_id -> info
         self._files_registry: Dict[str, dict] = {}
         self._files_lock = threading.Lock()
 
     def start(self) -> None:
-        """Khởi tạo socket TCP và bắt đầu lắng nghe kết nối."""
+        """Initialize TCP socket and begin listening for connections."""
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
@@ -112,9 +112,9 @@ class UnifiedChatServer:
         display_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
         print("=" * 65)
         print("   STREAMCHAT UNIFIED SERVER (HTTP & SSE - NO WEBSOCKET)")
-        print(f"   * Dia chi truy cap Web UI: http://{display_host}:{self.port}")
-        print(f"   * Real-time Endpoint:     http://{display_host}:{self.port}/api/events (SSE)")
-        print("   * Chuan HTTP/1.1 thuan tuy 100% tren Raw TCP Socket")
+        print(f"   * Web UI URL:        http://{display_host}:{self.port}")
+        print(f"   * Real-time SSE:     http://{display_host}:{self.port}/api/events (SSE)")
+        print("   * 100% Pure HTTP/1.1 on Raw TCP Socket")
         print("=" * 65)
 
         try:
@@ -132,12 +132,12 @@ class UnifiedChatServer:
                     daemon=True,
                 ).start()
         except KeyboardInterrupt:
-            logger.info("Server đang tắt...")
+            logger.info("Server shutting down...")
         finally:
             self.stop()
 
     def stop(self) -> None:
-        """Dừng server và đóng tất cả kết nối."""
+        """Stop server and terminate all active connections."""
         self.running = False
         with self._clients_lock:
             for client in list(self._clients):
@@ -149,10 +149,10 @@ class UnifiedChatServer:
             except Exception:
                 pass
 
-    # ─────────────────── Quản lý người dùng ───────────────────
+    # ------------------- User Management -------------------
 
     def get_online_users(self) -> List[str]:
-        """Lấy danh sách các username đang trực tuyến."""
+        """Get list of currently online usernames."""
         with self._clients_lock:
             users = {
                 client.username
@@ -162,7 +162,7 @@ class UnifiedChatServer:
         return sorted(list(users))
 
     def broadcast_event(self, event: dict, exclude: Optional[SSEClient] = None) -> None:
-        """Gửi sự kiện đến tất cả các client SSE đang kết nối."""
+        """Broadcast an event to all connected active SSE clients."""
         with self._clients_lock:
             target_clients = [
                 c for c in self._clients
@@ -172,7 +172,7 @@ class UnifiedChatServer:
             client.send_event(event)
 
     def send_to_user(self, target_username: str, event: dict) -> bool:
-        """Gửi sự kiện đến các kết nối của một user cụ thể (unicast)."""
+        """Send an event to all active connections of a specific user (unicast)."""
         sent = False
         with self._clients_lock:
             target_clients = [
@@ -184,10 +184,10 @@ class UnifiedChatServer:
                 sent = True
         return sent
 
-    # ─────────────────── Xử lý kết nối TCP & HTTP ───────────────────
+    # ------------------- TCP & HTTP Request Handling -------------------
 
     def _handle_connection(self, client_sock: socket.socket, addr: Tuple[str, int]) -> None:
-        """Xử lý phân loại request HTTP."""
+        """Handle incoming connection and route HTTP requests."""
         try:
             client_sock.settimeout(30.0)
             try:
@@ -198,14 +198,14 @@ class UnifiedChatServer:
                 pass
 
             raw_data = bytearray()
-            # Đọc đến khi thấy ranh giới headers \r\n\r\n
+            # Read until headers boundary \r\n\r\n
             while b"\r\n\r\n" not in raw_data:
                 chunk = client_sock.recv(4096)
                 if not chunk:
                     client_sock.close()
                     return
                 raw_data.extend(chunk)
-                if len(raw_data) > 65536:  # Giới hạn kích thước header 64KB
+                if len(raw_data) > 65536:  # 64KB headers limit
                     client_sock.close()
                     return
 
@@ -235,17 +235,17 @@ class UnifiedChatServer:
             query_params = parse_qs(url_parts.query)
             content_length = int(headers.get("content-length", 0))
 
-            # 1. Server-Sent Events Stream (Giữ kết nối lâu dài)
+            # 1. Server-Sent Events Stream (Persistent long-lived connection)
             if method == "GET" and path == "/api/events":
                 self._handle_sse_stream(client_sock, addr, query_params, headers)
                 return
 
-            # 2. Các yêu cầu HTTP Request thông thường (Request-Response)
+            # 2. Standard HTTP Request-Response handling
             self._handle_http_request(
                 client_sock, method, path, query_params, headers, body_prefix, content_length
             )
         except Exception as exc:
-            logger.debug("Loi xu ly ket noi tu %s: %s", addr, exc)
+            logger.debug("Connection handling error from %s: %s", addr, exc)
             try:
                 client_sock.close()
             except Exception:
@@ -258,7 +258,7 @@ class UnifiedChatServer:
         query_params: dict,
         headers: dict,
     ) -> None:
-        """Thiết lập kết nối Server-Sent Events (SSE) thời gian thực."""
+        """Establish real-time Server-Sent Events (SSE) connection."""
         username = query_params.get("username", [""])[0] or headers.get("x-username", "")
         username = unquote(username).strip().lower()
 
@@ -269,17 +269,17 @@ class UnifiedChatServer:
             sock.close()
             return
 
-        # Kick session cũ nếu cùng username đăng nhập ở tab/thiết bị khác
+        # Terminate previous session if same username logs in from another tab or device
         with self._clients_lock:
             old_sessions = [c for c in self._clients if c.username == username and not c.is_closed]
         for old_c in old_sessions:
             old_c.send_event({
                 "type": "KICKED",
-                "message": "Tài khoản của bạn đã được đăng nhập từ một thiết bị hoặc tab khác.",
+                "message": "Your account has been logged in from another tab or device.",
             })
             old_c.close()
 
-        # Gửi HTTP 200 SSE header
+        # Send HTTP 200 SSE header
         sse_header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream; charset=utf-8\r\n"
@@ -294,19 +294,19 @@ class UnifiedChatServer:
             sock.close()
             return
 
-        sock.settimeout(None)  # Bỏ timeout cho SSE lâu dài
+        sock.settimeout(None)  # Remove timeout for long-lived SSE
         client = SSEClient(sock, addr, username)
         with self._clients_lock:
             self._clients.add(client)
 
-        logger.info("[SSE] User '%s' ket noi stream tu %s:%d", username, addr[0], addr[1])
+        logger.info("[SSE] User '%s' connected stream from %s:%d", username, addr[0], addr[1])
 
-        # Gửi dữ liệu ban đầu cho client
+        # Send initial data to client
         client.send_event({
             "type": "AUTH_RESP",
             "success": True,
             "username": username,
-            "message": f"Chào mừng {username}! Đăng nhập thành công.",
+            "message": f"Welcome {username}! Logged in successfully.",
         })
         online_users = self.get_online_users()
         self.broadcast_event({
@@ -315,10 +315,10 @@ class UnifiedChatServer:
         })
         self.broadcast_event({
             "type": "SYSTEM",
-            "message": f"✨ Người dùng @{username} vừa tham gia phòng chat.",
+            "message": f"User @{username} has joined the chat room.",
         }, exclude=client)
 
-        # Vòng lặp giữ kết nối và gửi heartbeat
+        # Heartbeat loop
         try:
             while self.running and not client.is_closed:
                 time.sleep(15)
@@ -328,7 +328,7 @@ class UnifiedChatServer:
             self._disconnect_client(client)
 
     def _disconnect_client(self, client: SSEClient) -> None:
-        """Dọn dẹp khi một client ngắt kết nối SSE."""
+        """Clean up when an SSE client disconnects."""
         client.close()
         with self._clients_lock:
             self._clients.discard(client)
@@ -346,16 +346,16 @@ class UnifiedChatServer:
                 })
                 self.broadcast_event({
                     "type": "SYSTEM",
-                    "message": f"🔌 Người dùng @{username} đã rời phòng chat.",
+                    "message": f"User @{username} has left the chat room.",
                 })
-            logger.info("[SSE] Client '%s' da ngat ket noi", username)
+            logger.info("[SSE] Client '%s' disconnected", username)
 
-    # ─────────────────── Xử lý HTTP Request-Response ───────────────────
+    # ------------------- HTTP Request-Response Handling -------------------
 
     def _read_full_body(
         self, sock: socket.socket, body_prefix: bytes, content_length: int
     ) -> bytes:
-        """Đọc toàn bộ nội dung body HTTP request."""
+        """Read complete HTTP request body."""
         body = bytearray(body_prefix)
         while len(body) < content_length:
             to_read = min(65536, content_length - len(body))
@@ -375,13 +375,13 @@ class UnifiedChatServer:
         body_prefix: bytes,
         content_length: int,
     ) -> None:
-        """Phục vụ file tĩnh và các REST API endpoints."""
+        """Serve static files and REST API endpoints."""
         try:
-            # 1. Phục vụ trang chủ
+            # 1. Serve home page
             if method == "GET" and path in ("/", "/index.html"):
                 self._serve_file(sock, STATIC_DIR / "index.html")
 
-            # 2. Phục vụ tài nguyên tĩnh (CSS, JS, Fonts, Ảnh)
+            # 2. Serve static assets (CSS, JS, Fonts, Images)
             elif method == "GET" and path.startswith("/static/"):
                 rel_path = path[len("/static/"):].lstrip("/")
                 target_file = (STATIC_DIR / rel_path).resolve()
@@ -390,7 +390,7 @@ class UnifiedChatServer:
                 else:
                     self._send_http_response(sock, 404, "text/plain", b"File not found")
 
-            # 3. API Đăng nhập
+            # 3. Login API
             elif method == "POST" and path == "/api/login":
                 body = self._read_full_body(sock, body_prefix, content_length)
                 try:
@@ -401,7 +401,7 @@ class UnifiedChatServer:
                     if not username or not password:
                         self._send_http_response(
                             sock, 400, "application/json",
-                            json.dumps({"status": "error", "message": "Vui lòng nhập đầy đủ thông tin"}).encode("utf-8")
+                            json.dumps({"status": "error", "message": "Please provide both username and password"}).encode("utf-8")
                         )
                         return
 
@@ -412,13 +412,13 @@ class UnifiedChatServer:
                             json.dumps({
                                 "status": "ok",
                                 "username": username,
-                                "message": f"Chào mừng {username}! Đăng nhập thành công.",
+                                "message": f"Welcome {username}! Login successful.",
                             }).encode("utf-8")
                         )
                     else:
                         self._send_http_response(
                             sock, 401, "application/json",
-                            json.dumps({"status": "error", "message": "Tên đăng nhập hoặc mật khẩu không chính xác."}).encode("utf-8")
+                            json.dumps({"status": "error", "message": "Incorrect username or password."}).encode("utf-8")
                         )
                 except Exception as exc:
                     self._send_http_response(
@@ -426,7 +426,7 @@ class UnifiedChatServer:
                         json.dumps({"status": "error", "message": str(exc)}).encode("utf-8")
                     )
 
-            # 4. API Đăng xuất
+            # 4. Logout API
             elif method == "POST" and path == "/api/logout":
                 username = query_params.get("username", [""])[0]
                 if username:
@@ -436,7 +436,7 @@ class UnifiedChatServer:
                         c.close()
                 self._send_http_response(sock, 200, "application/json", b'{"status":"ok"}')
 
-            # 5. API Gửi tin nhắn chat
+            # 5. Send Chat Message API
             elif method == "POST" and path == "/api/send":
                 body = self._read_full_body(sock, body_prefix, content_length)
                 try:
@@ -446,19 +446,19 @@ class UnifiedChatServer:
                     text = str(data.get("text", "")).strip()
 
                     if not text:
-                        self._send_http_response(sock, 400, "application/json", b'{"status":"error","message":"Tin nhan trong"}')
+                        self._send_http_response(sock, 400, "application/json", b'{"status":"error","message":"Message is empty"}')
                         return
 
                     msg_event = {
                         "type": "MSG",
-                        "from": sender or "Ẩn danh",
+                        "from": sender or "Anonymous",
                         "target": target,
                         "text": text,
                         "timestamp": time.time(),
-                        "is_private": target not in ("all", "", "phong_chung"),
+                        "is_private": target not in ("all", "", "general"),
                     }
 
-                    if target in ("all", "", "phong_chung"):
+                    if target in ("all", "", "general"):
                         self.broadcast_event(msg_event)
                     else:
                         self.send_to_user(target, msg_event)
@@ -469,11 +469,11 @@ class UnifiedChatServer:
                 except Exception as exc:
                     self._send_http_response(sock, 400, "application/json", json.dumps({"status": "error", "message": str(exc)}).encode("utf-8"))
 
-            # 6. Upload tệp tin qua HTTP POST
+            # 6. File Upload via HTTP POST
             elif method == "POST" and path == "/api/file":
                 self._handle_file_upload(sock, query_params, headers, body_prefix, content_length)
 
-            # 7. Tải tệp tin
+            # 7. File Download
             elif method == "GET" and path == "/api/download":
                 file_id = query_params.get("id", [""])[0]
                 with self._files_lock:
@@ -491,7 +491,7 @@ class UnifiedChatServer:
                 else:
                     self._send_http_response(sock, 404, "text/plain", b"File not found or expired")
 
-            # 8. Trạng thái server & Người dùng online
+            # 8. Server Status & Online Users
             elif method == "GET" and path in ("/api/status", "/api/users"):
                 data = {
                     "status": "online",
@@ -517,7 +517,7 @@ class UnifiedChatServer:
         body_prefix: bytes,
         content_length: int,
     ) -> None:
-        """Đọc và lưu file nhị phân được upload từ trình duyệt."""
+        """Read and store binary file uploaded from browser."""
         filename = query_params.get("filename", [""])[0] or headers.get("x-filename", "")
         filename = unquote(filename) if filename else "file_transfer"
         safe_filename = os.path.basename(filename) or "file_transfer"
@@ -532,7 +532,7 @@ class UnifiedChatServer:
         dest_filename = f"{file_id}_{safe_filename}"
         dest_path = UPLOADS_DIR / dest_filename
 
-        # Đọc toàn bộ body file nhị phân
+        # Read binary file body
         with open(dest_path, "wb") as f:
             if body_prefix:
                 f.write(body_prefix)
@@ -552,15 +552,15 @@ class UnifiedChatServer:
                 "filename": safe_filename,
                 "path": str(dest_path),
                 "size": file_size,
-                "sender": sender or "Ẩn danh",
+                "sender": sender or "Anonymous",
                 "target": target,
             }
 
-        # Bắn thông báo thời gian thực qua SSE đến người nhận
+        # Broadcast real-time SSE notification to recipient
         file_event = {
             "type": "FILE_READY",
             "stream_id": file_id,
-            "from": sender or "Một người dùng",
+            "from": sender or "A user",
             "target": target,
             "filename": safe_filename,
             "size": file_size,
@@ -568,7 +568,7 @@ class UnifiedChatServer:
             "timestamp": time.time(),
         }
 
-        if target in ("all", "", "phong_chung"):
+        if target in ("all", "", "general"):
             self.broadcast_event(file_event)
         else:
             self.send_to_user(target, file_event)
@@ -592,7 +592,7 @@ class UnifiedChatServer:
         filepath: Path,
         custom_headers: Optional[Dict[str, str]] = None,
     ) -> None:
-        """Gửi nội dung file tĩnh với MIME type thích hợp."""
+        """Serve static file content with appropriate MIME type."""
         mime, _ = mimetypes.guess_type(str(filepath))
         if mime is None:
             mime = "application/octet-stream"
@@ -612,7 +612,7 @@ class UnifiedChatServer:
         body: bytes,
         custom_headers: Optional[Dict[str, str]] = None,
     ) -> None:
-        """Tạo và gửi HTTP response chuẩn."""
+        """Construct and transmit standard HTTP response."""
         status_text = {
             200: "OK",
             404: "Not Found",
@@ -640,7 +640,7 @@ class UnifiedChatServer:
 
 
 def start_unified_server(host: str = "0.0.0.0", port: int = 8080) -> UnifiedChatServer:
-    """Hàm tiện ích khởi chạy UnifiedChatServer."""
+    """Utility function to launch UnifiedChatServer."""
     server = UnifiedChatServer(host=host, port=port)
     server.start()
     return server

@@ -92,6 +92,8 @@ python run_all.py
 ```
 
 *Hoặc nhấp đúp trực tiếp vào file **`run_all.bat`** trên Windows.*
+Nếu lệnh `python` trỏ đến một bản Python khác với bản bạn đã cài dependency, hãy dùng
+`py -3 run_all.py` trên Windows để chọn bản Python 3 mặc định của Python Launcher.
 
 > [!TIP]
 > - Nhấn `Ctrl + C` tại cửa sổ Terminal để tự động dừng cả Server và tất cả Client cùng lúc.
@@ -393,11 +395,13 @@ Bộ điều phối I/O bất đồng bộ non-blocking dựa trên `selectors` 
   - **`__init__()`**: Khởi tạo bảng ánh xạ session: `_sessions` (lưu theo `conn_id`), `_addr_to_conn` (ánh xạ IP/Port sang `conn_id`), `_user_to_conn` (ánh xạ username sang `conn_id`).
   - **`start_server(host, port)`**: Mở socket UDP non-blocking, bind vào IP/Port chỉ định, đăng ký với `selectors.DefaultSelector()` để giám sát sự kiện đọc, khởi chạy luồng nền `_tick_loop()` và bước vào event loop chính để tiếp nhận gói tin.
   - **`_read_datagrams()`**: Đọc vét cạn toàn bộ các datagram đang có trong hàng đợi của socket bằng vòng lặp `recvfrom()` cho đến khi nhận tín hiệu `BlockingIOError`.
-  - **`handle_datagram(data: bytes, addr: tuple[str, int])`**: Trích xuất `conn_id` từ header của datagram. Nếu là kết nối mới, tự động gọi `_create_session()`. Tự động cập nhật `remote_addr` của session nếu client đổi cổng (hỗ trợ kỹ thuật NAT rebinding) và chuyển tiếp dữ liệu vào hàm `receive_packet()` của kết nối.
-  - **`_create_session(conn_id, addr)`**: Tạo mới cặp đối tượng `Connection` và `Session`, liên kết các hàm callback xử lý ứng dụng (`_on_app_message`), broadcast (`_broadcast`) và unicast (`_unicast`).
-  - **`_on_app_message(conn_id, stream_id, data)`**: Tiếp nhận dữ liệu ứng dụng đã được tầng transport tái lắp ghép nguyên vẹn và chuyển cho `session.process_payload(data)`.
+  - **`handle_datagram(data: bytes, addr: tuple[str, int])`**: Trích xuất `conn_id` từ header của datagram. Khi client đổi địa chỉ, chỉ cập nhật `remote_addr` sau khi một gói DATA mã hóa có AAD hợp lệ được xác minh bằng khóa phiên; địa chỉ đang được ánh xạ sang kết nối khác sẽ bị từ chối. Mapping địa chỉ cũ chỉ bị xóa nếu vẫn trỏ tới chính session này.
+  - **`_create_session(conn_id, addr)`**: Tạo mới cặp đối tượng `Connection` và `Session`, liên kết các callback xử lý ứng dụng, broadcast/unicast, đăng nhập và đăng xuất.
+  - **`_on_auth_success(conn_id, username)`**: Áp dụng chính sách một tài khoản chỉ có một session; lần đăng nhập thành công mới nhất sẽ kick session cũ.
+  - **`_on_auth_logout(conn_id, username)`**: Xóa ánh xạ user nếu còn thuộc session hiện tại và cập nhật thông báo/danh sách user trực tuyến.
+  - **`_on_app_message(conn_id, stream_id, data)`**: Chuyển dữ liệu Stream 0 tới `session.process_payload(data)`; dữ liệu trên stream khác chỉ được xử lý như chunk file sau khi metadata stream đã được xác thực.
   - **`_broadcast(sender: str, msg: dict, exclude: Optional[str]=None)`**: Mã hóa bản tin JSON và ghi vào Stream 0 của tất cả các phiên client đã xác thực thành công (trừ người gửi trong `exclude`).
-  - **`_unicast(sender: str, target_username: str, msg: dict) -> bool`**: Tra cứu `conn_id` của người nhận thông qua `_user_to_conn`, gửi bản tin JSON trực tiếp vào Stream 0 của người nhận đó. Trả về `True` nếu gửi thành công hoặc `False` nếu người nhận offline.
+  - **`_unicast(sender: str, target_username: str, msg: dict) -> bool`**: Tra cứu `conn_id` của người nhận thông qua `_user_to_conn`, xác minh session vẫn đăng nhập đúng username đích rồi mới gửi JSON vào Stream 0. Trả về `False` nếu người nhận offline, không tồn tại hoặc mapping không còn hợp lệ.
   - **`_tick_loop()`**: Vòng lặp chạy ngầm định kỳ mỗi 50ms, duyệt qua tất cả session để gọi `connection.tick()`. Nếu phát hiện session nào bị đánh dấu đã đóng (`connection.closed`), tiến hành xóa bỏ khỏi hệ thống.
   - **`_cleanup()`**: Đóng selector và UDP socket giải phóng tài nguyên hệ thống.
   - **`main()`**: Hàm khởi động trực tiếp cho Server.
@@ -405,7 +409,7 @@ Bộ điều phối I/O bất đồng bộ non-blocking dựa trên `selectors` 
 #### 📄 `src/server/session.py`
 Xử lý logic nghiệp vụ ứng dụng: xác thực tài khoản, kiểm soát quyền truy cập, định tuyến tin nhắn trò chuyện và thông báo truyền tệp.
 
-- **Cơ sở dữ liệu mẫu `_FAKE_USER_DB`**: Từ điển ánh xạ username sang chuỗi băm mật khẩu SHA-256 (hỗ trợ các tài khoản mặc định `alice`, `bob`, `charlie`, `demo`).
+- **Cơ sở dữ liệu người dùng**: Xác thực qua SQLite `users.db`; client và server cùng dùng SHA-256 dạng chuỗi hex. Username được chuẩn hóa thành chữ thường.
 - **Lớp `Session`**:
   - **`__init__(conn_id, client_addr, connection, broadcast_fn, unicast_fn)`**: Khởi tạo trạng thái phiên, lưu địa chỉ client, liên kết đối tượng `Connection`, đặt cờ `authenticated = False`.
   - **`process_payload(app_msg: bytes)`**: Phân giải chuỗi JSON của tầng ứng dụng và điều hướng dựa theo trường `type`:
@@ -414,12 +418,14 @@ Xử lý logic nghiệp vụ ứng dụng: xác thực tài khoản, kiểm soá
     - `"FILE"` $\to$ gọi `_process_file()`.
     - `"FILE_DATA"` $\to$ gọi `_process_file_data()`.
   - **`_process_auth(msg: dict)`**: Trích xuất username và password_hash, gọi `verify_auth()` kiểm tra. Trả về phản hồi `AUTH_RESP`. Nếu thành công, kích hoạt bản tin thông báo `SYSTEM` phát cho toàn bộ phòng chat.
-  - **`verify_auth(username: str, password_hash: str) -> bool`**: So khớp thông tin đăng nhập với `_FAKE_USER_DB`. Nếu đúng, lưu trữ tên người dùng và đặt cờ `authenticated = True`.
+  - **`verify_auth(username: str, password_hash: str) -> bool`**: So khớp hash SHA-256 với SQLite. Một session đã đăng nhập có thể xác thực lại chính tài khoản đó; muốn đổi tài khoản cần đăng xuất trước. Nếu tài khoản đăng nhập từ session khác, session mới nhất được giữ và session cũ bị kick.
+  - **`_process_logout()`**: Xóa trạng thái xác thực của session và gọi server dọn ánh xạ username; kết nối UDP vẫn mở để đăng nhập lại.
   - **`_process_msg(msg: dict)`**: Kiểm tra quyền đăng nhập; nếu hợp lệ, tạo cấu trúc tin nhắn hoàn chỉnh kèm timestamp rồi gọi `route_broadcast` (nếu gửi tới `"all"`) hoặc `route_unicast` (nếu gửi tới username cụ thể).
-  - **`_process_file(msg: dict)`**: Tiếp nhận thông báo bắt đầu gửi file (gồm tên file, kích thước, mã băm sha256 và `stream_id` dành riêng cho file) và chuyển tiếp tới người nhận tương ứng.
-  - **`_process_file_data(msg: dict)`**: Chuyển tiếp các phần dữ liệu của tệp tin đến đúng đối tượng nhận.
-  - **`route_broadcast(msg: dict)`**: Gọi callback phát tán tin nhắn tới toàn bộ người dùng trực tuyến.
-  - **`route_unicast(target_username: str, msg: dict)`**: Gọi callback gửi tin nhắn riêng cho một người dùng; nếu đối tượng không online, gửi lại gói tin báo lỗi `"ERROR"` cho người gửi.
+  - **`_process_file(msg: dict)`**: Chỉ nhận từ session đã xác thực; kiểm tra target, tên file, kích thước, SHA-256, `stream_id` và URL tải xuống trước khi chuyển tiếp thông báo tới người nhận.
+  - **`_process_file_data(msg: dict)`**: Chỉ nhận từ session đã xác thực; yêu cầu `stream_id`, offset không âm và chunk dữ liệu không rỗng trong giới hạn kích thước, sau đó áp dụng cùng quy tắc target broadcast/unicast như chat.
+  - **`process_file_chunk(stream_id, data)`**: Định tuyến chunk nhị phân trên stream riêng chỉ khi có metadata hợp lệ cho stream đó; ngăn chunk vượt kích thước file đã khai báo và xóa trạng thái truyền khi đủ dữ liệu.
+  - **`route_broadcast(msg: dict)`**: Chỉ cho session đã xác thực gọi broadcast; server gửi tới các session đang xác thực, ngoại trừ username người gửi.
+  - **`route_unicast(target_username: str, msg: dict)`**: Chỉ cho session đã xác thực gửi riêng; nếu người nhận offline hoặc không tồn tại, trả gói `"ERROR"` rõ ràng về cho người gửi.
   - **`_send_app_message(msg: dict)`**: Tiện ích chuyển đổi dict thành JSON byte và ghi vào Stream 0 của kết nối.
 
 ---
@@ -440,6 +446,7 @@ Máy khách UDP, quản lý việc kết nối đến máy chủ trung tâm, tru
   - **`_on_app_message(stream_id: int, data: bytes)`**: Callback khi nhận được một message hoàn chỉnh từ Server: phân tích JSON, cập nhật cờ `_authenticated` (nếu là `AUTH_RESP`) và đẩy bản tin vào `event_queue` để giao diện Web hiển thị tức thời.
   - **`_send_json(msg: dict)`**: Tiện ích serialize dữ liệu JSON và ghi vào Stream 0.
   - **`get_file_progress() -> dict[int, dict]`**: Truy xuất thông tin tiến độ truyền file thời gian thực (tên file, dung lượng, số byte đã gửi, trạng thái).
+  - **`logout()`**: Gửi yêu cầu `LOGOUT` tới server, giữ kết nối UDP để có thể đăng nhập lại.
   - **`disconnect()`**: Dừng các vòng lặp và đóng UDP socket.
   - **Thuộc tính `is_authenticated` & `username`**: Lấy trạng thái đăng nhập và tên tài khoản hiện hành.
 
@@ -457,6 +464,7 @@ Máy chủ Web HTTP nội bộ được lập trình bằng **Raw TCP Socket** t
     - `GET /api/status` $\to$ gọi `_handle_status()`.
     - `GET /api/progress` $\to$ gọi `_handle_progress()`.
     - `POST /api/login` $\to$ gọi `_handle_login()`.
+    - `POST /api/logout` $\to$ gọi `_handle_logout()` và gửi yêu cầu đăng xuất qua UDP.
     - `POST /api/send` $\to$ gọi `_handle_send()`.
     - `POST /api/file` $\to$ gọi `_handle_file_upload()`.
   - **`_serve_static(client_socket, filename)`**: Đọc file từ thư mục tĩnh `static/`, tự động nhận diện MIME type (`text/html`, `text/css`, `application/javascript`,...) và trả về nội dung với mã trạng thái HTTP 200 OK.
@@ -465,6 +473,7 @@ Máy chủ Web HTTP nội bộ được lập trình bằng **Raw TCP Socket** t
   - **`_broadcast_sse(event: dict)`**: Định dạng sự kiện thành chuỗi SSE và gửi tới tất cả các kết nối SSE đang mở.
   - **`_broadcast_sse_raw(message: str)`**: Gửi trực tiếp chuỗi bytes thô đến danh sách socket SSE, tự động dọn dẹp các socket bị ngắt kết nối (broken pipe).
   - **`_handle_login(client_socket, body)`**: Đọc JSON chứa `username` và `password`, gọi phương thức `client.connect()`, và phản hồi lại cho frontend kết quả trạng thái kết nối.
+  - **`_handle_logout(client_socket)`**: Gọi `client.logout()` để xóa trạng thái xác thực trên server mà không đóng kết nối UDP.
   - **`_handle_send(client_socket, body)`**: Đọc JSON chứa `target` và `text`, gọi `client.send_chat()`, phản hồi xác nhận gửi thành công.
   - **`_handle_file_upload(client_socket, body)`**: Đọc đường dẫn `file_path` và đối tượng nhận `target`, kích hoạt `client.start_file_transfer()`, phản hồi lại `stream_id` được gán cho tệp tin.
   - **`_handle_status(client_socket)`**: Trả về dữ liệu JSON biểu diễn tình trạng người dùng hiện tại (đã đăng nhập hay chưa, username, trạng thái kết nối UDP).
@@ -788,4 +797,3 @@ sequenceDiagram
 | **Bob UDP $\to$ Bob Web UI** | Event Pumping | Python Queue | Python `dict` $\to$ SSE String | Đưa vào `event_queue`, format thành `data: <JSON>\n\n` |
 | **Bob Web UI $\to$ Bob Browser**| Presentation | HTTP/1.1 SSE | Raw SSE Text Stream | TCP Socket gửi qua stream `text/event-stream` mở sẵn |
 | **Bob Browser** | DOM Rendering | JavaScript DOM | HTML Nodes (Glassmorphism Bubble) | `EventSource.onmessage` $\to$ Render bong bóng chat kèm badge `🔒 Riêng tư` |
-

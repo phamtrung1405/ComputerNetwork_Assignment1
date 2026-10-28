@@ -177,12 +177,14 @@ class Stream:
             if is_eom:
                 self._eom_offsets.add(end_offset)
 
-            # Attempt to reassemble a complete message
-            if self._eom_offset is not None:
+            first_assembled: Optional[bytes] = None
+            while True:
                 assembled = self._try_assemble()
-                if assembled is not None:
-                    self._complete_messages.append(assembled)
-                    return assembled
+                if assembled is None:
+                    break
+                self._complete_messages.append(assembled)
+                if first_assembled is None:
+                    first_assembled = assembled
 
             return first_assembled
 
@@ -193,6 +195,9 @@ class Stream:
             Reassembled message bytes if complete, or None if chunks are missing.
         """
         current: int = self._expected_offset
+        parts: list[bytes] = []
+        assembled_offsets: list[int] = []
+        eom_found: bool = False
 
         # Sort available chunk offsets
         sorted_offsets = sorted(self._recv_buffer.keys())
@@ -203,7 +208,7 @@ class Stream:
                 return None
             chunk = self._recv_buffer[off]
             parts.append(chunk)
-            assembled_offsets.append(current)
+            assembled_offsets.append(off)
             current += len(chunk)
 
             if current in self._eom_offsets:

@@ -88,18 +88,19 @@ class ChatClient:
             ``True`` when connection has been started (auth result arrives via event).
         """
         self._username = username
-        self._running = True
+        if not self._running:
+            self._running = True
 
-        # Begin handshake
-        self._connection.handle_handshake()
+            # Begin handshake
+            self._connection.handle_handshake()
 
-        # Run network poll in background thread
-        poll_thread = threading.Thread(target=self.poll_network, daemon=True)
-        poll_thread.start()
+            # Run network poll in background thread
+            poll_thread = threading.Thread(target=self.poll_network, daemon=True)
+            poll_thread.start()
 
-        # Run tick loop
-        tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
-        tick_thread.start()
+            # Run tick loop
+            tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
+            tick_thread.start()
 
         # Wait for handshake completion (up to 5 seconds)
         if not self._connection.handshake_complete.wait(timeout=5.0):
@@ -287,6 +288,12 @@ class ChatClient:
                 logger.info("Authentication succeeded: %s", self._username)
             else:
                 logger.warning("Authentication failed")
+        elif msg.get("type") == "LOGOUT_RESP":
+            self._authenticated = False
+            self._username = None
+        elif msg.get("type") == "KICKED":
+            self._authenticated = False
+            self._username = None
 
         self.event_queue.put(msg)
 
@@ -318,6 +325,16 @@ class ChatClient:
         except OSError:
             logger.debug("Socket already closed")
         logger.info("Client disconnected")
+
+    def logout(self) -> None:
+        """Log out from the server without closing the reusable UDP connection."""
+        if not self._authenticated:
+            return
+
+        self._send_json({"type": "LOGOUT"})
+        self._authenticated = False
+        self._username = None
+        logger.info("Client logged out")
 
     @property
     def is_authenticated(self) -> bool:

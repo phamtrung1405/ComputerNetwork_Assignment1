@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Optional, Callable
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from common import packet
@@ -34,6 +35,8 @@ from common.constants import (
     HEARTBEAT_INTERVAL,
     IDLE_TIMEOUT,
     RECV_BUFFER_SIZE,
+    HEADER_SIZE,
+    GCM_TAG_SIZE,
 )
 from common.crypto import (
     generate_keypair,
@@ -189,8 +192,23 @@ class Connection:
         # Encrypt if session key established
         actual_payload: bytes = payload
         if self._session_key is not None and packet_type == PKT_DATA:
-            actual_payload = encrypt(payload, self._session_key, seq)
             flags |= FLAG_ENCRYPTED
+            header_aad = packet.pack(
+                msg_type=packet_type,
+                conn_id=self.conn_id,
+                seq_num=seq,
+                flags=flags,
+                stream_id=stream_id,
+                offset=offset,
+                payload=b"\x00" * (len(payload) + GCM_TAG_SIZE),
+            )[:HEADER_SIZE]
+            actual_payload = encrypt(
+                payload,
+                self._session_key,
+                seq,
+                associated_data=header_aad,
+                is_server=self.is_server,
+            )
 
         raw: bytes = packet.pack(
             msg_type=packet_type,
@@ -240,7 +258,7 @@ class Connection:
         if msg_type == PKT_ACK:
             self._handle_ack(payload)
         elif msg_type == PKT_DATA:
-            self._handle_data(header, payload)
+            self._handle_data(header, payload, raw_bytes[:HEADER_SIZE])
         elif msg_type == PKT_HELLO:
             self._handle_hello(header, payload)
         elif msg_type == PKT_HELLO_ACK:
@@ -251,6 +269,42 @@ class Connection:
             logger.debug("Heartbeat ACK received from %s", self.remote_addr)
         else:
             logger.debug("Unknown packet type: 0x%02X", msg_type)
+
+    def verify_migration_datagram(self, raw_bytes: bytes) -> bool:
+        """Verify an encrypted DATA packet before accepting a new peer address.
+
+        Unauthenticated ACK, heartbeat, or handshake packets are not sufficient
+        proof that a datagram from a changed address belongs to this connection.
+        """
+        if self._session_key is None:
+            return False
+
+        try:
+            header, payload = packet.unpack(raw_bytes)
+            if (
+                header.conn_id != self.conn_id
+                or header.msg_type != PKT_DATA
+                or not (header.flags & FLAG_ENCRYPTED)
+                or header.payload_len != len(raw_bytes) - HEADER_SIZE
+            ):
+                return False
+
+            decrypt(
+                payload,
+                self._session_key,
+                header.seq_num,
+                associated_data=raw_bytes[:HEADER_SIZE],
+                is_server=not self.is_server,
+            )
+        except (InvalidTag, TypeError, ValueError) as exc:
+            logger.debug(
+                "Rejected address migration proof for conn_id=%d: %s",
+                self.conn_id,
+                exc,
+            )
+            return False
+
+        return True
 
     def _handle_ack(self, payload: bytes) -> None:
         """Handle incoming ACK packet and forward to ReliabilityManager.
@@ -267,7 +321,7 @@ class Connection:
         except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
             logger.debug("Malformed ACK payload: %s", exc)
 
-    def _handle_data(self, header: packet.Header, payload: bytes) -> None:
+    def _handle_data(self, header: packet.Header, payload: bytes, header_aad: bytes) -> None:
         """Handle DATA packet: decrypt, feed to Stream, send ACK.
 
         Args:
@@ -282,7 +336,11 @@ class Connection:
         if (header.flags & FLAG_ENCRYPTED) and self._session_key is not None:
             try:
                 actual_payload = decrypt(
-                    payload, self._session_key, header.seq_num
+                    payload,
+                    self._session_key,
+                    header.seq_num,
+                    associated_data=header_aad,
+                    is_server=not self.is_server,
                 )
             except Exception as exc:
                 logger.warning("Decryption failed for seq=%d: %s", header.seq_num, exc)

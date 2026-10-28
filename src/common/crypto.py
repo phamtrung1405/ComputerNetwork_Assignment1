@@ -142,13 +142,40 @@ def derive_shared_secret(
     return session_key
 
 
-def encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes:
+def derive_session_keys(
+    private_key: X25519PrivateKey,
+    peer_public_bytes: bytes,
+) -> tuple[bytes, bytes]:
+    """Derive distinct client-to-server and server-to-client AES keys."""
+    shared_secret = derive_shared_secret(
+        private_key,
+        peer_public_bytes,
+        info=b"streaming-protocol-directional-session-keys",
+    )
+    key_material = HKDF(
+        algorithm=hashes.SHA256(),
+        length=2 * AES_KEY_SIZE,
+        salt=None,
+        info=b"streaming-protocol-directional-key-expansion",
+    ).derive(shared_secret)
+    return key_material[:AES_KEY_SIZE], key_material[AES_KEY_SIZE:]
+
+
+def encrypt(
+    payload: bytes,
+    session_key: bytes,
+    packet_num: int,
+    associated_data: Optional[bytes] = None,
+    is_server: Optional[bool] = None,
+) -> bytes:
     """Encrypt payload using AES-256-GCM.
 
     Args:
         payload: Application payload to encrypt.
         session_key: 32-byte symmetric session key.
         packet_num: Packet sequence number used as 96-bit unique nonce.
+        associated_data: Optional authenticated data that is not encrypted.
+        is_server: Optional sender role used to separate directional nonces.
 
     Returns:
         bytes: ciphertext || tag (16-byte authentication tag appended by AESGCM).
@@ -189,13 +216,21 @@ def encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes:
     return ciphertext
 
 
-def decrypt(ciphertext: bytes, session_key: bytes, packet_num: int) -> bytes:
+def decrypt(
+    ciphertext: bytes,
+    session_key: bytes,
+    packet_num: int,
+    associated_data: Optional[bytes] = None,
+    is_server: Optional[bool] = None,
+) -> bytes:
     """Decrypt and verify packet integrity with AES-256-GCM.
 
     Args:
         ciphertext: Encrypted payload (including 16-byte authentication tag).
         session_key: 32-byte symmetric session key.
         packet_num: Packet sequence number used to reconstruct nonce.
+        associated_data: Optional authenticated data that is not encrypted.
+        is_server: Sender role used to reconstruct directional nonces.
 
     Returns:
         bytes: Original decrypted plaintext payload.

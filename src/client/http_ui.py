@@ -176,6 +176,8 @@ class HttpUI:
             elif method == "POST" and path == "/api/login":
                 body = self._read_text_body(client_socket, body_prefix, content_length)
                 self._handle_login(client_socket, body)
+            elif method == "POST" and path == "/api/logout":
+                self._handle_logout(client_socket)
             elif method == "POST" and path == "/api/send":
                 body = self._read_text_body(client_socket, body_prefix, content_length)
                 self._handle_send(client_socket, body)
@@ -235,6 +237,23 @@ class HttpUI:
             content: bytes = f.read()
 
         self._send_response(client_socket, 200, content_type, content)
+        client_socket.close()
+
+    def _handle_logout(self, client_socket: socket.socket) -> None:
+        """Log out the attached UDP client and return an HTTP status response."""
+        if self._client is None:
+            self._send_json_response(
+                client_socket,
+                503,
+                {"status": "error", "message": "Client not ready"},
+            )
+        else:
+            self._client.logout()
+            self._send_json_response(
+                client_socket,
+                200,
+                {"status": "ok", "message": "Logged out"},
+            )
         client_socket.close()
 
     # ----------------------- SSE -----------------------

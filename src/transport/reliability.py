@@ -47,6 +47,8 @@ class ReliabilityManager:
 
     def __init__(self) -> None:
         """Initialize congestion window, unacked buffer, and RTT variables."""
+        self._lock: threading.RLock = threading.RLock()
+
         # -- Congestion control --
         self.cwnd: float = float(INITIAL_CWND)
         self.ssthresh: float = float(SSTHRESH_INITIAL)
@@ -61,9 +63,14 @@ class ReliabilityManager:
         self.rttvar: Optional[float] = None
         self.rto: float = INITIAL_RTO
         self._consecutive_timeouts: int = 0  # Đếm số lần timeout liên tiếp phục vụ Exponential Backoff
+        self.max_retransmits: int = DEFAULT_MAX_RETRANSMITS
+        self.failed_packets: set[int] = set()
 
         # -- Unacknowledged packet buffer --
         self._unacked: dict[int, _InFlightPacket] = {}
+        self.max_acked_seq: int = -1
+        self.duplicate_acks: int = 0
+        self.consecutive_dupacks: int = 0
 
     # -------------------------- Record Sent --------------------------
 
@@ -204,29 +211,41 @@ class ReliabilityManager:
         Args:
             sample_rtt: Measured RTT sample (seconds).
         """
+        if isinstance(sample_rtt, bool) or not isinstance(sample_rtt, (int, float)):
+            raise TypeError("sample_rtt phải là số thực dương")
+        if not math.isfinite(sample_rtt) or sample_rtt < 0:
+            raise ValueError("sample_rtt phải là số thực hữu hạn không âm")
+
         alpha: float = 0.125
         beta: float = 0.25
 
-        if self.srtt is None:
-            self.srtt = sample_rtt
-            self.rttvar = sample_rtt / 2.0
-        else:
-            self.rttvar = (1.0 - beta) * self.rttvar + beta * abs(
-                self.srtt - sample_rtt
-            )
-            self.srtt = (1.0 - alpha) * self.srtt + alpha * sample_rtt
+        with self._lock:
+            if self.srtt is None:
+                self.srtt = float(sample_rtt)
+                self.rttvar = float(sample_rtt) / 2.0
+            else:
+                self.rttvar = (1.0 - beta) * self.rttvar + beta * abs(
+                    self.srtt - sample_rtt
+                )
+                self.srtt = (1.0 - alpha) * self.srtt + alpha * sample_rtt
 
-        self.rto = self.srtt + max(TICK_INTERVAL_CLOCK, 4.0 * self.rttvar)
-        self.rto = max(MIN_RTO, min(self.rto, MAX_RTO))
+            self.rto = self.srtt + max(TICK_INTERVAL_CLOCK, 4.0 * self.rttvar)
+            self.rto = max(MIN_RTO, min(self.rto, MAX_RTO))
+            self._consecutive_timeouts = 0
 
     # -------------------------- CUBIC cwnd --------------------------
 
-    def update_cwnd(self, is_loss: bool) -> None:
+    def update_cwnd(self, is_loss: bool, acked_packets: int = 1) -> None:
         """Update congestion window according to CUBIC algorithm.
 
         Args:
             is_loss: ``True`` if packet loss detected, ``False`` on successful ACK.
+            acked_packets: Number of newly acknowledged packets.
         """
+        if not isinstance(acked_packets, int) or isinstance(acked_packets, bool):
+            raise TypeError("acked_packets phải là số nguyên")
+        if acked_packets < 0:
+            raise ValueError("acked_packets không được âm")
         if not is_loss and acked_packets <= 0:
             # Không có dữ liệu mới được xác nhận (Duplicate/Stale ACK) -> không tăng cwnd
             return

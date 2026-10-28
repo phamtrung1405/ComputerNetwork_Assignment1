@@ -91,6 +91,45 @@ class TestEndpointKeyAgreement(unittest.TestCase):
             sock_a.close()
             sock_b.close()
 
+    def test_encrypted_data_authenticates_header_and_direction(self) -> None:
+        """Encrypted transport data must use peer-direction nonces and authenticate its header."""
+        sock_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_a.bind(("127.0.0.1", 0))
+        sock_a.settimeout(1.0)
+        sock_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_b.bind(("127.0.0.1", 0))
+        sock_b.settimeout(1.0)
+        received: list[tuple[int, bytes]] = []
+
+        try:
+            conn_a = Connection(sock=sock_a, remote_addr=sock_b.getsockname(), is_server=False)
+            conn_b = Connection(
+                sock=sock_b,
+                remote_addr=sock_a.getsockname(),
+                is_server=True,
+                on_app_message=lambda stream_id, data: received.append((stream_id, data)),
+            )
+
+            conn_a.handle_handshake()
+            hello, _ = sock_b.recvfrom(65535)
+            conn_b.receive_packet(hello)
+            hello_ack, _ = sock_a.recvfrom(65535)
+            conn_a.receive_packet(hello_ack)
+
+            conn_a.send_packet(PKT_DATA, 1, b"authenticated message", flags=FLAG_EOM)
+            raw_packet, _ = sock_b.recvfrom(65535)
+            conn_b.receive_packet(raw_packet)
+            self.assertEqual(received, [(1, b"authenticated message")])
+
+            tampered_packet = bytearray(raw_packet)
+            tampered_packet[10] ^= 0x01
+            with self.assertLogs("transport.connection", level="WARNING"):
+                conn_b.receive_packet(bytes(tampered_packet))
+            self.assertEqual(received, [(1, b"authenticated message")])
+        finally:
+            sock_a.close()
+            sock_b.close()
+
 
 class TestTamperedCiphertextRejection(unittest.TestCase):
     """Yêu cầu 2: AEAD AES-256-GCM từ chối mọi ciphertext bị can thiệp và bảo vệ toàn vẹn."""

@@ -1,9 +1,9 @@
 /**
  * StreamChat — Client-side Application Logic
  *
- * Sử dụng kiến trúc Client-Server chuẩn với HTTP REST và Server-Sent Events (SSE).
- * Tuân thủ 100% quy định môn học: Không sử dụng thư viện WebSocket.
- * Quản lý độc lập từng phiên trình duyệt trên cùng một địa chỉ:cổng 8080.
+ * Uses standard Client-Server architecture with HTTP REST and Server-Sent Events (SSE).
+ * 100% compliant with course requirements: No WebSocket libraries used.
+ * Manages independent browser sessions on the same address:port 8080.
  */
 
 "use strict";
@@ -57,7 +57,7 @@ const fileTransfersDiv = document.getElementById("file-transfers");
 
 let currentUsername = "";
 let isConnected = false;
-let activeTarget = "all";  // "all" hoặc username cụ thể
+let activeTarget = "all";  // "all" or specific username
 let eventSource = null;
 let selectedFile = null;
 
@@ -96,8 +96,8 @@ function escapeHtml(text) {
 // ═══════════════════════════════════════════════
 
 /**
- * Khởi tạo kết nối SSE (EventSource) thời gian thực đến máy chủ.
- * @param {string} username - Tên người dùng đã đăng nhập.
+ * Initialize real-time SSE (EventSource) connection to the server.
+ * @param {string} username - Logged-in username.
  */
 function initSSE(username) {
     if (eventSource) {
@@ -109,12 +109,12 @@ function initSSE(username) {
     try {
         eventSource = new EventSource(sseUrl);
     } catch (err) {
-        showLoginError("Trình duyệt không hỗ trợ EventSource: " + err.message);
+        showLoginError("Browser does not support EventSource: " + err.message);
         return;
     }
 
     eventSource.onopen = () => {
-        connectionStatus.textContent = "● Đã kết nối (HTTP/SSE)";
+        connectionStatus.textContent = "● Connected (HTTP/SSE)";
         connectionStatus.className = "conn-status connected";
     };
 
@@ -129,7 +129,7 @@ function initSSE(username) {
 
     eventSource.onerror = () => {
         if (isConnected) {
-            connectionStatus.textContent = "● Đang kết nối lại...";
+            connectionStatus.textContent = "● Reconnecting...";
             connectionStatus.className = "conn-status disconnected";
         }
     };
@@ -146,7 +146,7 @@ loginForm.addEventListener("submit", async (e) => {
 
     if (!username || !password) return;
 
-    loginBtn.querySelector(".btn-text").textContent = "Đang xác thực...";
+    loginBtn.querySelector(".btn-text").textContent = "Authenticating...";
     loginBtn.querySelector(".btn-spinner").classList.remove("hidden");
     loginBtn.disabled = true;
     loginError.classList.add("hidden");
@@ -170,17 +170,17 @@ loginForm.addEventListener("submit", async (e) => {
             initSSE(currentUsername);
             handleAuthSuccess(data);
         } else {
-            showLoginError(data.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
+            showLoginError(data.message || "Incorrect username or password.");
         }
     } catch (err) {
-        showLoginError("Lỗi kết nối máy chủ: " + err.message);
+        showLoginError("Server connection error: " + err.message);
     }
 });
 
 function showLoginError(msg) {
     loginError.textContent = msg;
     loginError.classList.remove("hidden");
-    loginBtn.querySelector(".btn-text").textContent = "Đăng nhập";
+    loginBtn.querySelector(".btn-text").textContent = "Login";
     loginBtn.querySelector(".btn-spinner").classList.add("hidden");
     loginBtn.disabled = false;
 }
@@ -231,14 +231,14 @@ function handleKicked(data) {
     chatScreen.classList.remove("active");
     loginScreen.classList.add("active");
 
-    showLoginError(data.message || "Tài khoản của bạn đã được đăng nhập từ một thiết bị hoặc tab khác.");
+    showLoginError(data.message || "Your account has logged in from another device or tab.");
 
     messagesDiv.innerHTML = `
         <div class="system-message">
-            <span>Chào mừng đến StreamChat! Bạn đang ở phòng chat chung.</span>
+            <span>Welcome to StreamChat! You are in the general chat room.</span>
         </div>
     `;
-    onlineUsersDiv.innerHTML = '<p class="empty-state">Chưa có ai khác online</p>';
+    onlineUsersDiv.innerHTML = '<p class="empty-state">No other users online</p>';
     onlineCountSpan.textContent = "0";
 }
 
@@ -252,14 +252,14 @@ function handleAuthSuccess(data) {
     isConnected = true;
     msgInput.focus();
 
-    addSystemMessage(data.message || `Đăng nhập thành công với tài khoản @${currentUsername}!`);
+    addSystemMessage(data.message || `Successfully logged in as @${currentUsername}!`);
 }
 
 function handleAuthResponse(data) {
     if (data.success) {
         handleAuthSuccess(data);
     } else {
-        showLoginError(data.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
+        showLoginError(data.message || "Incorrect username or password.");
         isConnected = false;
     }
 }
@@ -268,12 +268,12 @@ function handleUserList(data) {
     const users = data.users || [];
     onlineCountSpan.textContent = users.length;
 
-    // Lọc bỏ chính mình trong danh sách nhắn tin trực tiếp
+    // Filter out self from direct messaging list
     const otherUsers = users.filter((u) => u !== currentUsername);
 
     onlineUsersDiv.innerHTML = "";
     if (otherUsers.length === 0) {
-        onlineUsersDiv.innerHTML = '<p class="empty-state">Chưa có ai khác online</p>';
+        onlineUsersDiv.innerHTML = '<p class="empty-state">No other users online</p>';
         return;
     }
 
@@ -285,7 +285,7 @@ function handleUserList(data) {
             <div class="user-item-avatar">${username.charAt(0).toUpperCase()}</div>
             <div class="user-item-info">
                 <span class="user-item-name">@${escapeHtml(username)}</span>
-                <span class="user-item-status">● Đang online</span>
+                <span class="user-item-status">● Online</span>
             </div>
         `;
         btn.addEventListener("click", () => {
@@ -296,21 +296,21 @@ function handleUserList(data) {
 }
 
 /**
- * Chọn người nhận chat (Phòng chung hoặc nhắn riêng 1-1).
+ * Select chat target (General room or 1-1 private chat).
  */
 function selectChatTarget(target) {
     activeTarget = target;
 
-    // Cập nhật trạng thái active trên sidebar
+    // Update active state in sidebar
     if (target === "all") {
         navAll.classList.add("active");
-        chatTitle.textContent = "💬 Phòng chung";
-        msgInput.placeholder = "Nhập tin nhắn... (@username để nhắn riêng)";
+        chatTitle.textContent = "💬 General Room";
+        msgInput.placeholder = "Type a message... (@username for private)";
         if (fileTargetInput) fileTargetInput.value = "all";
     } else {
         navAll.classList.remove("active");
-        chatTitle.textContent = `🔒 Chat riêng với @${target}`;
-        msgInput.placeholder = `Nhắn tin riêng cho @${target}...`;
+        chatTitle.textContent = `🔒 Private chat with @${target}`;
+        msgInput.placeholder = `Private message to @${target}...`;
         if (fileTargetInput) fileTargetInput.value = target;
     }
 
@@ -342,12 +342,12 @@ function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, 
     senderEl.className = "message-sender";
     if (isPrivate) {
         if (isOutgoing) {
-            senderEl.innerHTML = `Bạn ➔ @${escapeHtml(target)} <span class="private-badge">🔒 Riêng tư</span>`;
+            senderEl.innerHTML = `You ➔ @${escapeHtml(target)} <span class="private-badge">🔒 Private</span>`;
         } else {
-            senderEl.innerHTML = `@${escapeHtml(sender)} <span class="private-badge">🔒 Riêng tư</span>`;
+            senderEl.innerHTML = `@${escapeHtml(sender)} <span class="private-badge">🔒 Private</span>`;
         }
     } else {
-        senderEl.textContent = isOutgoing ? "Bạn" : `@${sender}`;
+        senderEl.textContent = isOutgoing ? "You" : `@${sender}`;
     }
 
     const bubbleEl = document.createElement("div");
@@ -382,7 +382,7 @@ async function sendMessage() {
     let target = activeTarget;
     let actualText = text;
 
-    // Kiểm tra tiền tố @username nếu nhập tay
+    // Check @username prefix if typed manually
     const atMatch = text.match(/^@(\S+)\s+(.+)$/);
     if (atMatch) {
         target = atMatch[1].toLowerCase();
@@ -406,10 +406,10 @@ async function sendMessage() {
 
         const result = await res.json();
         if (!res.ok || result.status !== "ok") {
-            addSystemMessage("⚠️ Không thể gửi tin nhắn: " + (result.message || "Lỗi máy chủ"));
+            addSystemMessage("⚠️ Failed to send message: " + (result.message || "Server error"));
         }
     } catch (err) {
-        addSystemMessage("⚠️ Lỗi mạng khi gửi tin nhắn: " + err.message);
+        addSystemMessage("⚠️ Network error sending message: " + err.message);
     }
 }
 
@@ -431,10 +431,10 @@ function handleFileReady(data) {
     const isTarget = data.target === "all" || data.target === currentUsername || isOutgoing;
     if (!isTarget) return;
 
-    // 1. Thêm thẻ tệp tin vào cửa sổ chat
+    // 1. Add file card to chat window
     addFileMessage(data.from, data.filename, data.size, data.download_url, isOutgoing, data.target);
 
-    // 2. Thêm vào danh sách tệp bên sidebar
+    // 2. Add to file list in sidebar
     addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
 }
 
@@ -444,8 +444,8 @@ function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target)
 
     const senderEl = document.createElement("div");
     senderEl.className = "message-sender";
-    const targetText = target !== "all" ? ` (Gửi riêng: @${target})` : "";
-    senderEl.textContent = isOutgoing ? `Bạn đã gửi tệp${targetText}:` : `@${sender} đã gửi tệp${targetText}:`;
+    const targetText = target !== "all" ? ` (Private to: @${target})` : "";
+    senderEl.textContent = isOutgoing ? `You sent a file${targetText}:` : `@${sender} sent a file${targetText}:`;
 
     const bubbleEl = document.createElement("div");
     bubbleEl.className = "message-bubble";
@@ -459,7 +459,7 @@ function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target)
             <span class="file-card-size">${formatBytes(size)}</span>
         </div>
         <a href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename)}">
-            📥 Tải về
+            📥 Download
         </a>
     `;
 
@@ -494,8 +494,8 @@ function addFileTransferSidebar(streamId, filename, size, downloadUrl) {
             <div class="progress-bar-fill" style="width: 100%"></div>
         </div>
         <div class="transfer-status" style="display:flex; justify-content:space-between; align-items:center;">
-            <span>${formatBytes(size)} — ✅ Hoàn tất</span>
-            <a href="${downloadUrl}" style="color:var(--accent-primary); font-weight:600; text-decoration:none;" download>Tải</a>
+            <span>${formatBytes(size)} — ✅ Complete</span>
+            <a href="${downloadUrl}" style="color:var(--accent-primary); font-weight:600; text-decoration:none;" download>Download</a>
         </div>
     `;
 }
@@ -529,14 +529,14 @@ function openFileDialog() {
     fileDialog.classList.remove("hidden");
     clearSelectedFile();
     if (fileTargetInput) fileTargetInput.value = activeTarget;
-    fileSendBtn.textContent = "Gửi Tệp";
+    fileSendBtn.textContent = "Send File";
     updateFileSendBtnState();
 }
 
 function closeFileDialog() {
     fileDialog.classList.add("hidden");
     clearSelectedFile();
-    fileSendBtn.textContent = "Gửi Tệp";
+    fileSendBtn.textContent = "Send File";
     updateFileSendBtnState();
 }
 
@@ -565,7 +565,7 @@ fileRemoveBtn.addEventListener("click", (e) => {
     clearSelectedFile();
 });
 
-// Kéo thả file
+// Drag and drop file
 fileDropZone.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -587,15 +587,15 @@ fileDropZone.addEventListener("drop", (e) => {
     }
 });
 
-// Gửi file nhị phân lên server với thanh tiến trình và thông báo trực quan
+// Upload binary file to server with progress bar and visual notification
 fileSendBtn.addEventListener("click", () => {
     if (!selectedFile) return;
 
     const target = fileTargetInput.value.trim().toLowerCase() || "all";
     const fileToSend = selectedFile;
     fileSendBtn.disabled = true;
-    const originalText = "Gửi Tệp";
-    fileSendBtn.textContent = "Đang gửi... 0%";
+    const originalText = "Send File";
+    fileSendBtn.textContent = "Uploading... 0%";
 
     const url = `/api/file?target=${encodeURIComponent(target)}&filename=${encodeURIComponent(fileToSend.name)}&sender=${encodeURIComponent(currentUsername)}`;
 
@@ -606,11 +606,11 @@ fileSendBtn.addEventListener("click", () => {
     xhr.setRequestHeader("X-Target", encodeURIComponent(target));
     xhr.setRequestHeader("X-Sender", encodeURIComponent(currentUsername));
 
-    // Bắt tiến trình upload để hiển thị % trực tiếp lên nút
+    // Track upload progress to display % directly on button
     xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && e.total > 0) {
             const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
-            fileSendBtn.textContent = `Đang gửi... ${percent}%`;
+            fileSendBtn.textContent = `Uploading... ${percent}%`;
         }
     };
 
@@ -618,25 +618,25 @@ fileSendBtn.addEventListener("click", () => {
         try {
             const result = JSON.parse(xhr.responseText || "{}");
             if (xhr.status >= 200 && xhr.status < 300 && result.status === "ok") {
-                fileSendBtn.textContent = "✅ Đã tải lên thành công!";
-                addSystemMessage(`📤 Đã gửi thành công tệp tin ${fileToSend.name}!`);
+                fileSendBtn.textContent = "✅ Upload successful!";
+                addSystemMessage(`📤 Successfully sent file ${fileToSend.name}!`);
                 setTimeout(() => {
                     closeFileDialog();
                 }, 1200);
             } else {
-                addSystemMessage("⚠️ Không thể gửi file: " + (result.message || "Lỗi máy chủ"));
+                addSystemMessage("⚠️ Failed to send file: " + (result.message || "Server error"));
                 fileSendBtn.disabled = false;
                 fileSendBtn.textContent = originalText;
             }
         } catch (err) {
-            addSystemMessage("⚠️ Lỗi phản hồi upload: " + err.message);
+            addSystemMessage("⚠️ Upload response error: " + err.message);
             fileSendBtn.disabled = false;
             fileSendBtn.textContent = originalText;
         }
     };
 
     xhr.onerror = () => {
-        addSystemMessage("⚠️ Lỗi kết nối mạng khi upload file.");
+        addSystemMessage("⚠️ Network error while uploading file.");
         fileSendBtn.disabled = false;
         fileSendBtn.textContent = originalText;
     };
@@ -662,15 +662,15 @@ btnDisconnect.addEventListener("click", () => {
 
     chatScreen.classList.remove("active");
     loginScreen.classList.add("active");
-    loginBtn.querySelector(".btn-text").textContent = "Đăng nhập";
+    loginBtn.querySelector(".btn-text").textContent = "Login";
     loginBtn.querySelector(".btn-spinner").classList.add("hidden");
     loginBtn.disabled = false;
 
     messagesDiv.innerHTML = `
         <div class="system-message">
-            <span>Chào mừng đến StreamChat! Bạn đang ở phòng chat chung.</span>
+            <span>Welcome to StreamChat! You are in the general chat room.</span>
         </div>
     `;
-    onlineUsersDiv.innerHTML = '<p class="empty-state">Chưa có ai khác online</p>';
+    onlineUsersDiv.innerHTML = '<p class="empty-state">No other users online</p>';
     onlineCountSpan.textContent = "0";
 });

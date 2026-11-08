@@ -189,7 +189,7 @@ class TestEncryptionBinding(unittest.TestCase):
         raw = net.pending("c2s")[0]
         self.assertLessEqual(len(raw), MAX_UDP_PAYLOAD)
 
-    @bind_required
+    # C-1 đã được M1 sửa trên origin/main (khóa hai chiều + is_server), nên không còn bind_required.
     def test_directions_do_not_share_keystream(self) -> None:
         """C-1: cùng plaintext, cùng seq=0 ở hai chiều phải cho ciphertext khác nhau."""
         net, cli, srv = make_pair()

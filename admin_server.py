@@ -1,16 +1,16 @@
 """
 admin_server.py
 ~~~~~~~~~~~~~~~
-Trang quản trị (Web Admin) hoàn toàn độc lập với hệ thống StreamChat chính.
-Chỉ dùng thư viện chuẩn của Python (http.server, sqlite3, hashlib, json).
-Cho phép:
-  - Xem danh sách người dùng trong database users.db
-  - Thêm người dùng mới (tự động hash mật khẩu bằng SHA-256)
-  - Đổi mật khẩu
-  - Xóa người dùng
-  - Tìm kiếm người dùng
+Independent Web Admin portal for the StreamChat system.
+Uses standard Python libraries only (http.server, sqlite3, hashlib, json).
+Features:
+  - View users in database users.db
+  - Add new users (auto SHA-256 hashed password)
+  - Update password
+  - Delete user
+  - Search users
 
-Cách chạy:
+Usage:
     python admin_server.py [--port 9090] [--db-path ../users.db]
 """
 
@@ -26,12 +26,12 @@ import sqlite3
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
-# Mặc định tìm file users.db ở cùng thư mục hoặc thư mục gốc
+# Default location for users.db
 DEFAULT_DB_FILE = Path(__file__).resolve().parent / "users.db"
 
 
 class AdminDB:
-    """Truy xuất trực tiếp database SQLite mà không phụ thuộc code của src."""
+    """Direct SQLite database access independent of src codebase."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -79,9 +79,9 @@ class AdminDB:
     def add_user(self, username: str, password: str) -> tuple[bool, str]:
         username = username.strip()
         if not username or not password:
-            return False, "Tên đăng nhập và mật khẩu không được để trống."
+            return False, "Username and password cannot be empty."
         if len(username) < 3:
-            return False, "Tên đăng nhập phải có ít nhất 3 ký tự."
+            return False, "Username must be at least 3 characters long."
 
         p_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
         try:
@@ -91,15 +91,15 @@ class AdminDB:
                     (username, p_hash),
                 )
                 conn.commit()
-            return True, f"Thêm người dùng '{username}' thành công!"
+            return True, f"User '{username}' created successfully!"
         except sqlite3.IntegrityError:
-            return False, f"Tên người dùng '{username}' đã tồn tại!"
+            return False, f"User '{username}' already exists!"
         except Exception as e:
-            return False, f"Lỗi: {e}"
+            return False, f"Error: {e}"
 
     def update_password(self, user_id: int, new_password: str) -> tuple[bool, str]:
         if not new_password:
-            return False, "Mật khẩu mới không được để trống."
+            return False, "New password cannot be empty."
         p_hash = hashlib.sha256(new_password.encode("utf-8")).hexdigest()
         try:
             with self.get_conn() as conn:
@@ -109,11 +109,11 @@ class AdminDB:
                     (p_hash, user_id),
                 )
                 if cursor.rowcount == 0:
-                    return False, "Không tìm thấy người dùng."
+                    return False, "User not found."
                 conn.commit()
-            return True, "Cập nhật mật khẩu thành công!"
+            return True, "Password updated successfully!"
         except Exception as e:
-            return False, f"Lỗi: {e}"
+            return False, f"Error: {e}"
 
     def delete_user(self, user_id: int) -> tuple[bool, str]:
         try:
@@ -121,16 +121,16 @@ class AdminDB:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM users WHERE id = ?;", (user_id,))
                 if cursor.rowcount == 0:
-                    return False, "Không tìm thấy người dùng."
+                    return False, "User not found."
                 conn.commit()
-            return True, "Xóa người dùng thành công!"
+            return True, "User deleted successfully!"
         except Exception as e:
-            return False, f"Lỗi: {e}"
+            return False, f"Error: {e}"
 
 
-# HTML Template độc lập (nhúng sẵn CSS và JavaScript)
+# Standalone HTML Template with embedded CSS and JavaScript
 HTML_PAGE = """<!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -438,7 +438,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="logo-badge">⚡</div>
                 <div>
                     <h1>StreamChat User Admin</h1>
-                    <div class="subtitle">Trang quản trị độc lập quản lý SQLite users.db</div>
+                    <div class="subtitle">Standalone Admin Portal for SQLite users.db</div>
                 </div>
             </div>
             <div class="badge-live">
@@ -447,30 +447,30 @@ HTML_PAGE = """<!DOCTYPE html>
         </header>
 
         <div class="grid">
-            <!-- Cột trái: Form tạo User -->
+            <!-- Left column: Create User Form -->
             <div class="card">
-                <div class="card-title">➕ Tạo tài khoản mới</div>
+                <div class="card-title">➕ Create New Account</div>
                 <form id="create-user-form">
                     <div class="form-group">
-                        <label for="username">Tên đăng nhập (Username)</label>
-                        <input type="text" id="username" placeholder="ví dụ: john_doe" required autocomplete="off">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="e.g.: john_doe" required autocomplete="off">
                     </div>
                     <div class="form-group">
-                        <label for="password">Mật khẩu (Password)</label>
-                        <input type="password" id="password" placeholder="Nhập mật khẩu..." required>
+                        <label for="password">Password</label>
+                        <input type="password" id="password" placeholder="Enter password..." required>
                     </div>
-                    <button type="submit" class="btn" id="btn-create">Tạo tài khoản</button>
+                    <button type="submit" class="btn" id="btn-create">Create Account</button>
                 </form>
             </div>
 
-            <!-- Cột phải: Danh sách User -->
+            <!-- Right column: Users List -->
             <div class="card">
-                <div class="card-title">👥 Danh sách người dùng (<span id="user-count">0</span>)</div>
+                <div class="card-title">👥 User Accounts (<span id="user-count">0</span>)</div>
                 <div class="table-controls">
                     <div class="search-box">
-                        <input type="text" id="search-input" placeholder="🔍 Tìm kiếm theo username...">
+                        <input type="text" id="search-input" placeholder="🔍 Search by username...">
                     </div>
-                    <button class="btn btn-small" id="btn-refresh" style="width: auto;">Làm mới</button>
+                    <button class="btn btn-small" id="btn-refresh" style="width: auto;">Refresh</button>
                 </div>
 
                 <div class="table-wrap">
@@ -478,13 +478,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <thead>
                             <tr>
                                 <th style="width: 70px;">ID</th>
-                                <th>Người dùng</th>
-                                <th>Ngày tạo</th>
-                                <th style="width: 140px; text-align: right;">Thao tác</th>
+                                <th>User</th>
+                                <th>Created At</th>
+                                <th style="width: 140px; text-align: right;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="user-table-body">
-                            <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Đang tải dữ liệu...</td></tr>
+                            <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading data...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -516,7 +516,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 userCount.textContent = data.length;
 
                 if (data.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Không tìm thấy người dùng nào.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No users found.</td></tr>`;
                     return;
                 }
 
@@ -529,14 +529,14 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <span>${u.username}</span>
                             </div>
                         </td>
-                        <td style="color: var(--text-muted);">${u.created_at || 'Mặc định'}</td>
+                        <td style="color: var(--text-muted);">${u.created_at || 'Default'}</td>
                         <td style="text-align: right;">
-                            <button class="btn btn-small btn-danger" onclick="deleteUser(${u.id}, '${u.username}')">Xóa</button>
+                            <button class="btn btn-small btn-danger" onclick="deleteUser(${u.id}, '${u.username}')">Delete</button>
                         </td>
                     </tr>
                 `).join("");
             } catch (err) {
-                showToast("Lỗi khi tải danh sách người dùng", "error");
+                showToast("Error loading users list", "error");
             }
         }
 
@@ -560,12 +560,12 @@ HTML_PAGE = """<!DOCTYPE html>
                     showToast(result.message, "error");
                 }
             } catch (err) {
-                showToast("Không thể kết nối đến Admin server", "error");
+                showToast("Cannot connect to Admin server", "error");
             }
         });
 
         async function deleteUser(id, username) {
-            if (!confirm(`Bạn có chắc muốn xóa tài khoản "${username}"?`)) return;
+            if (!confirm(`Are you sure you want to delete user "${username}"?`)) return;
             try {
                 const res = await fetch(`/api/users/${id}`, { method: "DELETE" });
                 const result = await res.json();
@@ -576,7 +576,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     showToast(result.message, "error");
                 }
             } catch (err) {
-                showToast("Lỗi khi xóa người dùng", "error");
+                showToast("Error deleting user", "error");
             }
         }
 
@@ -600,7 +600,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 class AdminRequestHandler(BaseHTTPRequestHandler):
-    """Xử lý request HTTP độc lập cho Admin Web Portal."""
+    """Handles HTTP requests for the Standalone Admin Portal."""
 
     db: AdminDB
 
@@ -636,7 +636,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(200 if success else 400, {"success": success, "message": msg})
             except Exception as e:
-                self._send_json(400, {"success": False, "message": f"Dữ liệu không hợp lệ: {e}"})
+                self._send_json(400, {"success": False, "message": f"Invalid data: {e}"})
             return
 
         self._send_json(404, {"error": "Not Found"})
@@ -664,7 +664,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args) -> None:
-        # Giảm thiểu log rác ra console
         pass
 
 
@@ -674,24 +673,24 @@ def run_admin_portal(host: str = "127.0.0.1", port: int = 9090, db_path: Optiona
 
     server = HTTPServer((host, port), AdminRequestHandler)
     print("=" * 60)
-    print(f" [STREAMCHAT ADMIN] Web Portal dang chay tai:")
+    print(f" [STREAMCHAT ADMIN] Web Portal running at:")
     print(f" -> http://{host}:{port}")
-    print(f" -> Database dang ket noi: {db_file}")
+    print(f" -> Connected database: {db_file}")
     print("=" * 60)
-    print("Nhan Ctrl+C de dung server Admin.")
+    print("Press Ctrl+C to stop the Admin server.")
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[STREAMCHAT ADMIN] Dang tat Admin server...")
+        print("\n[STREAMCHAT ADMIN] Stopping Admin server...")
         server.server_close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="StreamChat Standalone Admin Portal")
-    parser.add_argument("--host", default="127.0.0.1", help="Địa chỉ bind (mặc định 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=9090, help="Cổng Web Admin (mặc định 9090)")
-    parser.add_argument("--db-path", type=str, default="", help="Đường dẫn đến file users.db")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=9090, help="Web Admin port (default 9090)")
+    parser.add_argument("--db-path", type=str, default="", help="Path to users.db file")
 
     args = parser.parse_args()
     db_path = Path(args.db_path).resolve() if args.db_path else None

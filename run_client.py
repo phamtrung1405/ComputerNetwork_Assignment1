@@ -1,11 +1,11 @@
 """
 run_client.py
 ~~~~~~~~~~~~~
-Script mở giao diện người dùng Client trên trình duyệt web.
-Trong kiến trúc Client-Server HTTP & SSE trên port 8080, tất cả client
-truy cập cùng địa chỉ http://<server_ip>:8080 để đăng nhập tài khoản độc lập.
+Script to open the Client user interface in a web browser.
+In the Client-Server HTTP & SSE architecture on port 8080, all clients
+access http://<server_ip>:8080 to log into independent accounts.
 
-Sử dụng:
+Usage:
     python run_client.py [--server-ip IP] [--http-port 8080] [--no-browser]
 """
 
@@ -16,10 +16,10 @@ from pathlib import Path
 import sys
 import webbrowser
 
-# Thêm thư mục src vào sys.path để import các module
+# Add src folder to sys.path to import modules
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-# Đảm bảo UTF-8 output trên Windows console
+# Ensure UTF-8 output on Windows console
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -34,24 +34,24 @@ from common.constants import (
 
 
 def main() -> None:
-    """Entry point cho client."""
+    """Entry point for client launcher."""
     parser = argparse.ArgumentParser(description="StreamChat Client Launcher")
     parser.add_argument(
         "--server-ip",
         type=str,
         default=DEFAULT_SERVER_HOST,
-        help=f"IP máy chủ StreamChat (mặc định: {DEFAULT_SERVER_HOST})",
+        help=f"StreamChat Server IP (default: {DEFAULT_SERVER_HOST})",
     )
     parser.add_argument(
         "--http-port",
         type=int,
         default=DEFAULT_HTTP_PORT,
-        help=f"Cổng Web UI và SSE (mặc định: {DEFAULT_HTTP_PORT})",
+        help=f"Web UI and SSE port (default: {DEFAULT_HTTP_PORT})",
     )
     parser.add_argument(
         "--no-browser",
         action="store_true",
-        help="Không tự động mở trình duyệt web",
+        help="Do not automatically open web browser",
     )
     args = parser.parse_args()
 
@@ -59,16 +59,16 @@ def main() -> None:
     print("===============================================================")
     print("                    STREAMCHAT CLIENT")
     print("===============================================================")
-    print(f"  * Dia chi ket noi Web UI (HTTP & SSE): {url}")
-    print("  * Ban co the mo nhieu tab trinh duyet tren cung dia chi nay")
-    print("    de dang nhap dong thoi nhieu tai khoan khac nhau.")
+    print(f"  * Web UI URL (HTTP & SSE): {url}")
+    print("  * You can open multiple browser tabs at this address")
+    print("    to log into different accounts simultaneously.")
     print("===============================================================")
 
     if not args.no_browser:
-        print(f"\nDang mo trinh duyet toi {url}...")
+        print(f"\nOpening browser to {url}...")
         webbrowser.open(url)
     else:
-        print(f"\nVui long mo trinh duyet va truy cap: {url}")
+        print(f"\nPlease open your browser and navigate to: {url}")
 
 
 if __name__ == "__main__":

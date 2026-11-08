@@ -51,6 +51,10 @@ DEFAULT_MAX_RETRANSMITS: int = 8
 # Chu kỳ đồng hồ tối thiểu cho tính toán RTO (RFC 6298 quy định granular clock G)
 TICK_INTERVAL_CLOCK: float = 0.05
 
+# Ngưỡng SACK-based loss detection (RFC 6675 / RFC 5681 Mục 3.2): một gói được coi là mất khi
+# đã có >= DUPTHRESH gói có seq cao hơn được xác nhận, không cần chờ RTO.
+FAST_RETRANSMIT_DUPTHRESH: int = 3
+
 
 @dataclass
 class _InFlightPacket:
@@ -67,6 +71,8 @@ class _InFlightPacket:
     raw_data: bytes
     sent_time: float
     retransmit_count: int = 0
+    # max_acked_seq tại thời điểm truyền lại gần nhất (phục vụ fast retransmit, tránh dội gói)
+    fr_mark: int = -1
 
 
 class ReliabilityManager:
@@ -105,7 +111,8 @@ class ReliabilityManager:
 
         # ── Thống kê và kiểm soát lỗi ──
         self.max_retransmits: int = max_retransmits
-        self.failed_packets: set[int] = set()  # Các sequence number vượt quá ngưỡng retransmit tối đa
+        self.failed_packets: set[int] = set()  # Các sequence number vượt quá ngưỡng retransmit tối đa (tích lũy)
+        self._failed_pending: set[int] = set()  # Phần chưa được tầng trên lấy qua take_failed()
         self.duplicate_acks: int = 0  # Tổng số ACK trùng lặp / stale nhận được
         self.consecutive_dupacks: int = 0  # Số ACK trùng lặp liên tiếp chưa có dữ liệu mới
         self.max_acked_seq: int = -1  # Số thứ tự cao nhất từng được xác nhận
@@ -245,24 +252,36 @@ class ReliabilityManager:
             expired_packets: list[_InFlightPacket] = []
 
             # Sắp xếp theo thứ tự số thứ tự tăng dần
+            timed_out_any: bool = False
             for seq in sorted(self._unacked.keys()):
                 pkt = self._unacked[seq]
                 elapsed: float = now - pkt.sent_time
-                if elapsed >= self.rto:
+                timed_out: bool = elapsed >= self.rto
+                # SACK-based loss detection: >= DUPTHRESH gói cao hơn (tính từ lần truyền lại gần nhất) đã được ACK
+                fast_lost: bool = (
+                    self.max_acked_seq - max(pkt.packet_num, pkt.fr_mark) >= FAST_RETRANSMIT_DUPTHRESH
+                )
+                if timed_out or fast_lost:
                     if pkt.retransmit_count >= self.max_retransmits:
+                        # Gỡ khỏi _unacked để không chiếm cửa sổ gửi vĩnh viễn; báo qua take_failed()
                         self.failed_packets.add(pkt.packet_num)
+                        self._failed_pending.add(pkt.packet_num)
+                        del self._unacked[seq]
                         continue
 
                     retransmits.append(pkt.raw_data)
                     pkt.sent_time = now
                     pkt.retransmit_count += 1
+                    pkt.fr_mark = self.max_acked_seq
                     expired_packets.append(pkt)
+                    timed_out_any = timed_out_any or timed_out
 
             if expired_packets:
-                self._consecutive_timeouts += 1
+                if timed_out_any:
+                    self._consecutive_timeouts += 1
 
-                # ── Exponential Backoff (RFC 6298) ──
-                self.rto = min(self.rto * 2.0, MAX_RTO)
+                    # ── Exponential Backoff (RFC 6298): chỉ khi có timeout thật, không phải fast retransmit ──
+                    self.rto = min(self.rto * 2.0, MAX_RTO)
 
                 # ── Phòng chống CUBIC Multi-Loss Window Collapse (ADR-009) ──
                 # Chỉ giảm cwnd tối đa 1 lần trong mỗi khoảng RTT / loss epoch
@@ -372,7 +391,7 @@ class ReliabilityManager:
                 # ── Phản ứng mất gói & Fast Convergence (RFC 8312 Mục 4.5 & 4.6) ──
                 if self.cwnd < self._w_last_max:
                     # Dung lượng cổ chai đang thu hẹp: giảm trần sâu hơn (0.85 * cwnd)
-                    self._w_max = max(self.cwnd * (2.0 - CUBIC_BETA) / 2.0, float(MIN_CWND))
+                    self._w_max = max(self.cwnd * (1.0 + CUBIC_BETA) / 2.0, float(MIN_CWND))
                 else:
                     self._w_max = self.cwnd
                 self._w_last_max = self.cwnd
@@ -420,6 +439,10 @@ class ReliabilityManager:
             # Mục tiêu cửa sổ là max giữa CUBIC và TCP Reno
             w_target: float = max(w_cubic, w_tcp)
 
+            # Chặn trên của target: không vượt quá 1.5 * cwnd (RFC 9438 Mục 4.2),
+            # đảm bảo tốc độ tăng thấp hơn Slow Start dù epoch kéo dài.
+            w_target = min(w_target, 1.5 * self.cwnd)
+
             # Cập nhật per-ACK theo Mục 4.3
             if w_target > self.cwnd:
                 increment = float(acked_packets) * ((w_target - self.cwnd) / self.cwnd)
@@ -439,6 +462,20 @@ class ReliabilityManager:
         """
         with self._lock:
             return len(self._unacked) < int(self.cwnd)
+
+    def take_failed(self) -> set[int]:
+        """Lấy (và xóa) tập sequence number mới bị bỏ cuộc do vượt `max_retransmits`.
+
+        Dành cho tầng Connection phát hiện dữ liệu không thể giao được. `failed_packets`
+        vẫn giữ bản tích lũy để thống kê.
+
+        Returns:
+            set[int]: Các seq vừa thất bại kể từ lần gọi trước.
+        """
+        with self._lock:
+            failed = set(self._failed_pending)
+            self._failed_pending.clear()
+            return failed
 
     @property
     def in_flight(self) -> int:

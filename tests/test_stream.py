@@ -288,5 +288,52 @@ class TestStreamBufferProtectionAndInvalidInputs(unittest.TestCase):
             stream.read_incoming(offset=0, data=b"data", is_eom="not_bool")  # type: ignore
 
 
+class TestStreamOverlapAndChunkLimits(unittest.TestCase):
+    """Kiểm thử phát hiện chunk chồng lấn/xung đột và giới hạn số chunk trong bộ đệm (audit M-3)."""
+
+    def test_chunk_overlapping_buffered_chunk_after_it_rejected(self) -> None:
+        """Chunk mới chồng lên phần đầu của chunk đã đệm ở offset cao hơn phải bị từ chối."""
+        s = Stream(stream_id=1)
+        s.read_incoming(offset=8, data=b"BBBB", is_eom=False)
+        with self.assertRaises(ValueError):
+            s.read_incoming(offset=4, data=b"AAAAAAAA", is_eom=False)  # [4,12) chồng [8,12)
+
+    def test_chunk_overlapping_buffered_chunk_before_it_rejected(self) -> None:
+        """Chunk mới bắt đầu bên trong chunk đã đệm ở offset thấp hơn phải bị từ chối."""
+        s = Stream(stream_id=1)
+        s.read_incoming(offset=4, data=b"AAAAAAAA", is_eom=False)  # [4,12)
+        with self.assertRaises(ValueError):
+            s.read_incoming(offset=8, data=b"BBBB", is_eom=False)
+
+    def test_same_offset_first_chunk_wins(self) -> None:
+        """Chunk thứ hai trùng offset không được ghi đè chunk đã đệm (giữ bản đến trước)."""
+        s = Stream(stream_id=1)
+        self.assertIsNone(s.read_incoming(offset=0, data=b"GOOD", is_eom=False))
+        self.assertIsNone(s.read_incoming(offset=0, data=b"EVIL", is_eom=False))
+        self.assertEqual(s.read_incoming(offset=4, data=b"!", is_eom=True), b"GOOD!")
+
+    def test_adjacent_chunks_are_not_overlap(self) -> None:
+        """Chunk liền kề (end == start kế tiếp) hợp lệ, kể cả đến theo thứ tự đảo."""
+        s = Stream(stream_id=1)
+        self.assertIsNone(s.read_incoming(offset=4, data=b"BBBB", is_eom=True))
+        self.assertEqual(s.read_incoming(offset=0, data=b"AAAA", is_eom=False), b"AAAABBBB")
+
+    def test_buffered_chunk_count_limit(self) -> None:
+        """Vượt max_buffered_chunks chunk rời rạc trong bộ đệm phải bị chặn dù tổng byte nhỏ."""
+        s = Stream(stream_id=1, max_buffered_chunks=3)
+        for off in (10, 20, 30):
+            s.read_incoming(offset=off, data=b"x", is_eom=False)
+        with self.assertRaises(ValueError):
+            s.read_incoming(offset=40, data=b"x", is_eom=False)
+
+    def test_offset_index_cleaned_after_assembly(self) -> None:
+        """Sau khi ráp nối, chỉ mục offset không giữ lại mục đã giao (không rò rỉ)."""
+        s = Stream(stream_id=1, max_buffered_chunks=2)
+        for i in range(50):  # nhiều message liên tiếp: nếu không dọn chỉ mục, giới hạn 2 sẽ bị vượt
+            self.assertEqual(s.read_incoming(offset=i * 4, data=b"abcd", is_eom=True), b"abcd")
+        self.assertEqual(len(s._recv_buffer), 0)
+        self.assertEqual(len(s._sorted_offsets), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -324,6 +324,73 @@ class TestRetransmissionSelection(unittest.TestCase):
         self.assertEqual(len(retransmits), 0)
         self.assertIn(1, self.rel.failed_packets)
 
+    def test_fast_retransmit_when_three_higher_packets_sacked(self) -> None:
+        """SACK-based loss detection: gói có >= 3 gói seq cao hơn đã được SACK bị truyền lại ngay, không chờ RTO."""
+        for seq in range(1, 7):
+            self.rel.mark_sent(seq, f"p{seq}".encode())
+        self.rel.process_sack([(2, 6)])  # gói 1 bị bỏ sót, 5 gói cao hơn đã nhận
+        rto_before = self.rel.rto
+        cwnd_before = self.rel.cwnd
+
+        retransmits = self.rel.get_retransmits()
+
+        self.assertEqual(retransmits, [b"p1"])
+        self.assertEqual(self.rel.rto, rto_before)  # không phải timeout nên không backoff
+        self.assertAlmostEqual(self.rel.cwnd, cwnd_before * 0.7, delta=2.0)  # đã tính 1 lần giảm cwnd (+ vài ACK tăng)
+        self.assertLess(self.rel.cwnd, cwnd_before)
+
+    def test_no_fast_retransmit_below_dupthresh(self) -> None:
+        """Chỉ 2 gói cao hơn được SACK thì chưa coi là mất (có thể chỉ là đảo thứ tự)."""
+        for seq in range(1, 4):
+            self.rel.mark_sent(seq, f"p{seq}".encode())
+        self.rel.process_sack([(2, 3)])
+        self.assertEqual(self.rel.get_retransmits(), [])
+
+    def test_fast_retransmit_not_repeated_without_new_sacks(self) -> None:
+        """Sau khi truyền lại nhanh, chưa có SACK mới thì không truyền lại tiếp (không dội gói)."""
+        for seq in range(1, 7):
+            self.rel.mark_sent(seq, f"p{seq}".encode())
+        self.rel.process_sack([(2, 6)])
+        self.assertEqual(self.rel.get_retransmits(), [b"p1"])
+        self.assertEqual(self.rel.get_retransmits(), [])
+
+    def test_fast_retransmit_again_after_new_sacks_if_retransmission_lost(self) -> None:
+        """Bản truyền lại bị mất: khi >= 3 gói gửi sau đó được SACK thì truyền lại tiếp."""
+        for seq in range(1, 7):
+            self.rel.mark_sent(seq, f"p{seq}".encode())
+        self.rel.process_sack([(2, 6)])
+        self.assertEqual(self.rel.get_retransmits(), [b"p1"])
+
+        for seq in range(7, 11):
+            self.rel.mark_sent(seq, f"p{seq}".encode())
+        self.rel.process_sack([(7, 10)])
+        self.assertEqual(self.rel.get_retransmits(), [b"p1"])
+
+    def test_failed_packet_released_from_window(self) -> None:
+        """Gói vượt max_retransmits phải rời khỏi in-flight để không chiếm cửa sổ gửi vĩnh viễn."""
+        self.rel.cwnd = 2.0
+        self.rel.mark_sent(1, b"dead_1")
+        self.rel.mark_sent(2, b"dead_2")
+        for seq in (1, 2):
+            self.rel._unacked[seq].retransmit_count = self.rel.max_retransmits
+            self.rel._unacked[seq].sent_time = time.monotonic() - (self.rel.rto + 0.5)
+        self.assertFalse(self.rel.can_send())
+
+        self.assertEqual(self.rel.get_retransmits(), [])
+        self.assertEqual(self.rel.in_flight, 0)
+        self.assertTrue(self.rel.can_send())
+
+    def test_take_failed_returns_and_clears(self) -> None:
+        """take_failed() trả các seq mới thất bại một lần rồi xóa; failed_packets tích lũy giữ nguyên."""
+        self.rel.mark_sent(7, b"dead")
+        self.rel._unacked[7].retransmit_count = self.rel.max_retransmits
+        self.rel._unacked[7].sent_time = time.monotonic() - (self.rel.rto + 0.5)
+        self.rel.get_retransmits()
+
+        self.assertEqual(self.rel.take_failed(), {7})
+        self.assertEqual(self.rel.take_failed(), set())
+        self.assertIn(7, self.rel.failed_packets)
+
 
 class TestRttEstimationRfc6298(unittest.TestCase):
     """Kiểm thử tính toán RTT và RTO theo RFC 6298."""
@@ -420,11 +487,12 @@ class TestCubicCongestionControlRfc8312(unittest.TestCase):
 
         old_cwnd = self.rel.cwnd
         self.rel.update_cwnd(is_loss=False, acked_packets=5)
-        # cwnd phải tăng vượt qua W_max
-        self.assertGreater(self.rel.cwnd, 20.0)
+        # cwnd phải tăng nhanh hơn (thăm dò), nhưng mỗi ACK tăng tối đa 0.5 (target <= 1.5 * cwnd, RFC 9438 Mục 4.2)
+        self.assertGreater(self.rel.cwnd, old_cwnd + 5 * (1.0 / old_cwnd))
+        self.assertLessEqual(self.rel.cwnd, old_cwnd + 5 * 0.5 + 1e-9)
 
     def test_fast_convergence(self) -> None:
-        """Fast Convergence (RFC 8312 Mục 4.6): Nếu mất gói khi cwnd < W_last_max, giảm W_max sâu hơn (0.65)."""
+        """Fast Convergence (RFC 9438 Mục 4.7): Nếu mất gói khi cwnd < W_max, W_max = cwnd * (1 + beta) / 2 (0.85)."""
         # Đợt mất gói 1: cwnd = 30.0
         self.rel.cwnd = 30.0
         self.rel.update_cwnd(is_loss=True)
@@ -433,8 +501,23 @@ class TestCubicCongestionControlRfc8312(unittest.TestCase):
         # Giả sử mạng hồi phục lên cwnd = 25.0 (< 30.0) thì gặp đợt mất gói 2
         self.rel.cwnd = 25.0
         self.rel.update_cwnd(is_loss=True)
-        # W_max mới = 25.0 * (2.0 - 0.7) / 2.0 = 25.0 * 0.65 = 16.25
-        self.assertAlmostEqual(self.rel._w_max, 16.25, delta=0.01)
+        # W_max mới = 25.0 * (1 + 0.7) / 2 = 25.0 * 0.85 = 21.25
+        self.assertAlmostEqual(self.rel._w_max, 21.25, delta=0.01)
+
+    def test_cubic_target_clamped_to_1_5x_cwnd(self) -> None:
+        """RFC 9438 Mục 4.2: target không vượt quá 1.5 * cwnd, dù epoch kéo dài rất lâu."""
+        self.rel.srtt = 0.05
+        self.rel.cwnd = 20.0
+        self.rel.ssthresh = 10.0
+        self.rel._w_max = 20.0
+        self.rel.update_cwnd(is_loss=False, acked_packets=1)  # khởi tạo epoch
+        self.rel._epoch_start -= 30.0  # epoch dài 30 giây -> W_cubic rất lớn
+
+        before = self.rel.cwnd
+        self.rel.update_cwnd(is_loss=False, acked_packets=1)
+        # Một ACK: increment = (target - cwnd) / cwnd <= 0.5
+        self.assertGreater(self.rel.cwnd, before)
+        self.assertLessEqual(self.rel.cwnd, before + 0.5 + 1e-9)
 
     def test_duplicate_ack_does_not_grow_cwnd(self) -> None:
         """Duplicate ACK (acked_packets <= 0) không làm tăng cwnd."""

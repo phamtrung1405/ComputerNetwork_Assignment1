@@ -20,6 +20,7 @@ Kiến trúc & Phân bổ Payload an toàn (Payload Budget Verification):
 
 from __future__ import annotations
 
+import bisect
 import threading
 from typing import Callable, Optional
 
@@ -35,6 +36,9 @@ SAFE_MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE - GCM_TAG_SIZE  # 1362
 
 # Dung lượng bộ đệm nhận tối đa mặc định cho mỗi stream để ngăn ngừa tấn công DoS tràn bộ nhớ
 DEFAULT_MAX_STREAM_BUFFER_SIZE: int = 16 * 1024 * 1024  # 16 MB
+
+# Số chunk rời rạc tối đa trong bộ đệm nhận (giới hạn overhead bộ nhớ khi chunk rất nhỏ)
+DEFAULT_MAX_BUFFERED_CHUNKS: int = 65536
 
 
 class Stream:
@@ -55,6 +59,7 @@ class Stream:
         send_callback: Optional[Callable[[int, int, bytes, int], None]] = None,
         chunk_size: int = SAFE_MAX_APP_PAYLOAD,
         max_buffer_size: int = DEFAULT_MAX_STREAM_BUFFER_SIZE,
+        max_buffered_chunks: int = DEFAULT_MAX_BUFFERED_CHUNKS,
     ) -> None:
         """Khởi tạo Stream.
 
@@ -63,11 +68,13 @@ class Stream:
             send_callback: Hàm callback `(stream_id, offset, chunk, flags)` để gửi chunk qua Connection.
             chunk_size: Kích thước tối đa của mỗi chunk phân mảnh (mặc định 1362 bytes).
             max_buffer_size: Dung lượng bộ đệm nhận tối đa cho phép (mặc định 16MB).
+            max_buffered_chunks: Số chunk rời rạc tối đa trong bộ đệm nhận (mặc định 65536).
         """
         self.stream_id: int = stream_id
         self._send_callback: Optional[Callable[[int, int, bytes, int], None]] = send_callback
         self.chunk_size: int = chunk_size
         self.max_buffer_size: int = max_buffer_size
+        self.max_buffered_chunks: int = max_buffered_chunks
 
         # ── Phía gửi (Write State) ──
         self._write_offset: int = 0
@@ -75,6 +82,7 @@ class Stream:
 
         # ── Phía nhận (Receive & Reassembly State) ──
         self._recv_buffer: dict[int, bytes] = {}
+        self._sorted_offsets: list[int] = []  # Chỉ mục offset đang đệm (tăng dần) để kiểm tra chồng lấn O(log n)
         self._recv_lock: threading.Lock = threading.Lock()
         self._expected_offset: int = 0
         self._eom_offsets: set[int] = set()  # Lưu các điểm biên EOM đã nhận được
@@ -200,22 +208,42 @@ class Stream:
                 if not is_eom:
                     return None
 
-            # ── 2. Kiểm soát giới hạn bộ đệm phòng chống DoS ──
-            new_bytes: int = (
-                chunk_len
-                if offset not in self._recv_buffer
-                else max(0, chunk_len - len(self._recv_buffer[offset]))
-            )
-            if self._buffered_bytes + new_bytes > self.max_buffer_size:
+            # ── 2. Chunk trùng offset đã đệm: giữ bản đến trước, bỏ bản đến sau ──
+            if offset in self._recv_buffer:
+                return None
+
+            # ── 3. Phát hiện chồng lấn với chunk đã đệm (ranh giới chunk do bên gửi cố định) ──
+            idx: int = bisect.bisect_left(self._sorted_offsets, offset)
+            if idx > 0:
+                prev_off: int = self._sorted_offsets[idx - 1]
+                if prev_off + len(self._recv_buffer[prev_off]) > offset:
+                    raise ValueError(
+                        f"Stream {self.stream_id}: chunk [{offset},{end_offset}) chồng lấn "
+                        f"chunk đã đệm tại offset {prev_off}."
+                    )
+            if idx < len(self._sorted_offsets) and chunk_len > 0:
+                next_off: int = self._sorted_offsets[idx]
+                if next_off < end_offset:
+                    raise ValueError(
+                        f"Stream {self.stream_id}: chunk [{offset},{end_offset}) chồng lấn "
+                        f"chunk đã đệm tại offset {next_off}."
+                    )
+
+            # ── 4. Kiểm soát giới hạn bộ đệm phòng chống DoS ──
+            if len(self._recv_buffer) >= self.max_buffered_chunks:
                 raise ValueError(
-                    f"Stream {self.stream_id} buffer overflow: {self._buffered_bytes + new_bytes} "
+                    f"Stream {self.stream_id} buffer chunk limit: đã đệm "
+                    f"{len(self._recv_buffer)} chunk (tối đa {self.max_buffered_chunks})."
+                )
+            if self._buffered_bytes + chunk_len > self.max_buffer_size:
+                raise ValueError(
+                    f"Stream {self.stream_id} buffer overflow: {self._buffered_bytes + chunk_len} "
                     f"bytes vượt quá giới hạn {self.max_buffer_size} bytes."
                 )
 
             # Cập nhật bộ đệm
-            if offset in self._recv_buffer:
-                self._buffered_bytes -= len(self._recv_buffer[offset])
             self._recv_buffer[offset] = data_bytes
+            self._sorted_offsets.insert(idx, offset)
             self._buffered_bytes += chunk_len
 
             # ── 3. Ghi nhận biên kết thúc message (EOM) ──
@@ -279,6 +307,8 @@ class Stream:
         for off in assembled_offsets:
             self._buffered_bytes -= len(self._recv_buffer[off])
             del self._recv_buffer[off]
+        # Các offset đã ráp nối là những mục nhỏ nhất của chỉ mục (không còn chunk chồng lấn)
+        del self._sorted_offsets[: bisect.bisect_right(self._sorted_offsets, assembled_offsets[-1])]
 
         self._eom_offsets.remove(current)
         self._expected_offset = current

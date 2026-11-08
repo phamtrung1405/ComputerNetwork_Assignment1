@@ -1,6 +1,6 @@
 # STREAMCHAT — Hợp đồng tích hợp M1 (`connection.py`) ↔ M2 (`crypto` / `reliability` / `stream`)
 
-**Trạng thái:** `PROPOSED` — chờ M1 (Trung) xác nhận. Chưa có thay đổi nào được áp dụng vào `connection.py`.
+**Trạng thái:** `connection.py` đã được vá theo K1–K11 (2026-11-08, theo yêu cầu của Phước); chờ M1 (Trung) xác nhận. K2/K3 đã do M1 làm trước. Xem `docs/handoff/M1/README.md`.
 **Căn cứ:** `docs/audits/M2_AUDIT_REPORT.md` (các mã C-1…H-6), ADR-005, ADR-006, ADR-010, ADR-011, ADR-012.
 **Phạm vi sửa:** chỉ `src/transport/connection.py` (M1). API M2 đã sẵn sàng; không cần đổi chữ ký hàm nào.
 

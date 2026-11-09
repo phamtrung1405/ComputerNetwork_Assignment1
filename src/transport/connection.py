@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 import random
 import socket
 import threading
@@ -40,6 +41,7 @@ from common.constants import (
 )
 from common.crypto import (
     generate_keypair,
+    derive_session_keys,
     derive_shared_secret,
     encrypt,
     decrypt,
@@ -49,6 +51,10 @@ from transport.stream import Stream
 
 logger = logging.getLogger(__name__)
 
+# Resend HELLO if no HELLO_ACK arrives (seconds) and the maximum number of retries (K11)
+HELLO_RETRY_INTERVAL: float = 1.0
+HELLO_MAX_RETRIES: int = 5
+
 
 class Connection:
     """Logical UDP connection between two endpoints.
@@ -56,6 +62,10 @@ class Connection:
     Manages handshake (key exchange), encryption/decryption, sending/receiving
     packets, heartbeat keepalive, and retransmission.
     """
+
+    # M1<->M2 integration contract version (docs/project/M1_M2_INTEGRATION_CONTRACT.md).
+    # tests/test_connection_loopback.py reads this to know the contract is implemented.
+    INTEGRATION_CONTRACT_VERSION: int = 1
 
     def __init__(
         self,
@@ -84,8 +94,18 @@ class Connection:
         # Crypto
         self._private_key: Optional[X25519PrivateKey] = None
         self._public_bytes: Optional[bytes] = None
-        self._session_key: Optional[bytes] = None
+        self._session_key: Optional[bytes] = None  # Kept for compatibility: not None means keys exist
+        self._send_key: Optional[bytes] = None     # Write key of our own role (K1)
+        self._recv_key: Optional[bytes] = None     # Write key of the peer's role (K1)
+        self._hello_raw: Optional[bytes] = None    # Client: HELLO kept for retransmission (K11)
+        self._hello_ack_raw: Optional[bytes] = None  # Server: HELLO_ACK resent on duplicate HELLO (K11)
+        self._hello_sent_time: float = 0.0
+        self._hello_retries: int = 0
         self.handshake_complete: threading.Event = threading.Event()
+
+        # Send queue gated by the congestion window (K7)
+        self._tx_queue: deque = deque()
+        self._tx_lock: threading.RLock = threading.RLock()
 
         # Sequence numbers
         self._next_seq: int = 0
@@ -187,29 +207,15 @@ class Connection:
             flags: Control flags.
             offset: Byte offset within stream.
         """
+        if packet_type == PKT_DATA:
+            # K7: DATA goes through a queue and only reaches the socket while the
+            # congestion window has room. Never blocks the calling thread.
+            with self._tx_lock:
+                self._tx_queue.append((stream_id, bytes(payload), flags, offset))
+            self._flush_send_queue()
+            return
+
         seq: int = self._alloc_seq()
-
-        # Encrypt if session key established
-        actual_payload: bytes = payload
-        if self._session_key is not None and packet_type == PKT_DATA:
-            flags |= FLAG_ENCRYPTED
-            header_aad = packet.pack(
-                msg_type=packet_type,
-                conn_id=self.conn_id,
-                seq_num=seq,
-                flags=flags,
-                stream_id=stream_id,
-                offset=offset,
-                payload=b"\x00" * (len(payload) + GCM_TAG_SIZE),
-            )[:HEADER_SIZE]
-            actual_payload = encrypt(
-                payload,
-                self._session_key,
-                seq,
-                associated_data=header_aad,
-                is_server=self.is_server,
-            )
-
         raw: bytes = packet.pack(
             msg_type=packet_type,
             conn_id=self.conn_id,
@@ -217,13 +223,57 @@ class Connection:
             flags=flags,
             stream_id=stream_id,
             offset=offset,
-            payload=actual_payload,
+            payload=payload,
         )
+        self._raw_send(raw)
 
-        # Buffer in reliability manager if ACK required
-        if packet_type == PKT_DATA:
-            self.reliability.mark_sent(seq, raw)
+    def _flush_send_queue(self) -> None:
+        """Send queued DATA while ``reliability.can_send()`` is True (K7).
 
+        Called after enqueue, after processing an ACK and from ``tick()``. It does not
+        block, so it is safe from the receive loop (the server uses one thread for both).
+        """
+        with self._tx_lock:
+            while self._tx_queue and self.reliability.can_send():
+                stream_id, payload, flags, offset = self._tx_queue.popleft()
+                self._transmit_data(stream_id, payload, flags, offset)
+
+    def _transmit_data(self, stream_id: int, payload: bytes, flags: int, offset: int) -> None:
+        """Allocate seq, encrypt (K1-K3), record in reliability and send one DATA packet."""
+        seq: int = self._alloc_seq()
+
+        if self._send_key is not None:
+            flags |= FLAG_ENCRYPTED
+            # Header is the AAD: payload_len must equal the ciphertext length (plaintext + tag)
+            header_aad: bytes = packet.pack(
+                msg_type=PKT_DATA,
+                conn_id=self.conn_id,
+                seq_num=seq,
+                flags=flags,
+                stream_id=stream_id,
+                offset=offset,
+                payload=bytes(len(payload) + GCM_TAG_SIZE),
+            )[:HEADER_SIZE]
+            ciphertext: bytes = encrypt(
+                payload,
+                self._send_key,
+                seq,
+                associated_data=header_aad,
+                is_server=self.is_server,
+            )
+            raw: bytes = header_aad + ciphertext
+        else:
+            raw = packet.pack(
+                msg_type=PKT_DATA,
+                conn_id=self.conn_id,
+                seq_num=seq,
+                flags=flags,
+                stream_id=stream_id,
+                offset=offset,
+                payload=payload,
+            )
+
+        self.reliability.mark_sent(seq, raw)
         self._raw_send(raw)
 
     def _raw_send(self, data: bytes) -> None:
@@ -276,7 +326,12 @@ class Connection:
         Unauthenticated ACK, heartbeat, or handshake packets are not sufficient
         proof that a datagram from a changed address belongs to this connection.
         """
-        if self._session_key is None:
+        # Directional receive key after a handshake; _session_key only if keys were
+        # injected without one (legacy/tests).
+        verify_key: Optional[bytes] = (
+            self._recv_key if self._recv_key is not None else self._session_key
+        )
+        if verify_key is None:
             return False
 
         try:
@@ -291,7 +346,7 @@ class Connection:
 
             decrypt(
                 payload,
-                self._session_key,
+                verify_key,
                 header.seq_num,
                 associated_data=raw_bytes[:HEADER_SIZE],
                 is_server=not self.is_server,
@@ -318,44 +373,72 @@ class Connection:
                 (r[0], r[1]) for r in ack_info.get("ranges", [])
             ]
             self.reliability.process_sack(ranges)
-        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+        except (
+            json.JSONDecodeError, UnicodeDecodeError, KeyError,
+            ValueError, TypeError, IndexError, AttributeError,
+        ) as exc:
+            # K8: bad peer data must not raise out of receive_packet
             logger.debug("Malformed ACK payload: %s", exc)
+            return
+
+        # Window space was released: push queued DATA (K7)
+        self._flush_send_queue()
 
     def _handle_data(self, header: packet.Header, payload: bytes, header_aad: bytes) -> None:
-        """Handle DATA packet: decrypt, feed to Stream, send ACK.
+        """Handle DATA packet: authenticate+decrypt, feed Stream, then ACK, then deliver.
 
         Args:
             header: Unpacked header.
-            payload: Payload (potentially encrypted).
+            payload: Payload (encrypted after the handshake).
+            header_aad: The 22 header bytes exactly as received, used as AAD (K3).
         """
-        # Send immediate ACK
-        self._send_ack(header.seq_num)
+        encrypted: bool = bool(header.flags & FLAG_ENCRYPTED)
 
-        # Decrypt if needed
-        actual_payload: bytes = payload
-        if (header.flags & FLAG_ENCRYPTED) and self._session_key is not None:
+        if self._recv_key is not None:
+            # K4: after the handshake only encrypted DATA is accepted
+            if not encrypted:
+                logger.warning("Dropping unencrypted DATA seq=%d after handshake", header.seq_num)
+                return
             try:
-                actual_payload = decrypt(
+                actual_payload: bytes = decrypt(
                     payload,
-                    self._session_key,
+                    self._recv_key,
                     header.seq_num,
                     associated_data=header_aad,
                     is_server=not self.is_server,
                 )
-            except Exception as exc:
+            except (InvalidTag, ValueError, TypeError) as exc:
+                # K5: a packet that fails authentication is not ACKed
                 logger.warning("Decryption failed for seq=%d: %s", header.seq_num, exc)
                 return
+        else:
+            if encrypted:
+                logger.warning("Encrypted DATA seq=%d but no key yet", header.seq_num)
+                return
+            actual_payload = payload
 
         is_eom: bool = bool(header.flags & FLAG_EOM)
         stream = self.get_or_create_stream(header.stream_id)
-        complete_msg = stream.read_incoming(
-            offset=header.offset,
-            data=actual_payload,
-            is_eom=is_eom,
-        )
+        try:
+            stream.read_incoming(
+                offset=header.offset,
+                data=actual_payload,
+                is_eom=is_eom,
+            )
+        except ValueError as exc:
+            # K9: Stream refused the chunk (overflow, overlap) -> no ACK so the sender retransmits
+            logger.warning(
+                "Stream %d rejected chunk seq=%d: %s", header.stream_id, header.seq_num, exc
+            )
+            return
 
-        if complete_msg is not None and self.on_app_message is not None:
-            self.on_app_message(header.stream_id, complete_msg)
+        # K5: ACK only after the packet is authenticated and accepted by the Stream
+        self._send_ack(header.seq_num)
+
+        # K6: drain every complete message (several can complete at once on out-of-order arrival)
+        for msg in stream.get_complete_messages():
+            if self.on_app_message is not None:
+                self.on_app_message(header.stream_id, msg)
 
     def _send_ack(self, seq_num: int) -> None:
         """Send ACK for a given sequence number.
@@ -399,8 +482,20 @@ class Connection:
             offset=0,
             payload=hello_payload,
         )
+        self._hello_raw = raw
+        self._hello_sent_time = time.monotonic()
+        self._hello_retries = 0
         self._raw_send(raw)
         logger.info("Sent HELLO to %s (conn_id=%d)", self.remote_addr, self.conn_id)
+
+    def _install_keys(self, peer_pub_bytes: bytes) -> None:
+        """Derive directional keys and pick the send/receive key by role (K1)."""
+        client_key, server_key = derive_session_keys(self._private_key, peer_pub_bytes)
+        self._send_key = server_key if self.is_server else client_key
+        self._recv_key = client_key if self.is_server else server_key
+        # Shared (non-directional) secret, identical on both sides; kept for compatibility
+        # and diagnostics only. Traffic is protected by _send_key / _recv_key.
+        self._session_key = derive_shared_secret(self._private_key, peer_pub_bytes)
 
     def _handle_hello(self, header: packet.Header, payload: bytes) -> None:
         """Handle HELLO from Client (Server side).
@@ -417,9 +512,18 @@ class Connection:
             logger.warning("Malformed HELLO payload: %s", exc)
             return
 
+        # K11: duplicate HELLO (HELLO_ACK may have been lost) -> resend the same HELLO_ACK
+        if self._hello_ack_raw is not None:
+            self._raw_send(self._hello_ack_raw)
+            return
+
         # Generate server-side keypair
         self._private_key, self._public_bytes = generate_keypair()
-        self._session_key = derive_shared_secret(self._private_key, peer_pub_bytes)
+        try:
+            self._install_keys(peer_pub_bytes)
+        except (ValueError, TypeError) as exc:
+            logger.warning("Invalid HELLO public key: %s", exc)
+            return
 
         # Send HELLO_ACK with server public key
         ack_payload: bytes = json.dumps({
@@ -436,6 +540,7 @@ class Connection:
             offset=0,
             payload=ack_payload,
         )
+        self._hello_ack_raw = raw
         self._raw_send(raw)
         self.handshake_complete.set()
         logger.info(
@@ -461,7 +566,14 @@ class Connection:
             logger.warning("Received HELLO_ACK without sending HELLO")
             return
 
-        self._session_key = derive_shared_secret(self._private_key, peer_pub_bytes)
+        if self.handshake_complete.is_set():
+            return  # K11: duplicate HELLO_ACK, keys already installed
+
+        try:
+            self._install_keys(peer_pub_bytes)
+        except (ValueError, TypeError) as exc:
+            logger.warning("Invalid HELLO_ACK public key: %s", exc)
+            return
         self.handshake_complete.set()
         logger.info(
             "Handshake complete (client side) conn_id=%d", self.conn_id
@@ -519,8 +631,33 @@ class Connection:
         if now - self._last_heartbeat > HEARTBEAT_INTERVAL:
             self._send_heartbeat()
 
+        # K11: client resends HELLO while no HELLO_ACK has arrived
+        if (
+            self._hello_raw is not None
+            and not self.handshake_complete.is_set()
+            and self._hello_retries < HELLO_MAX_RETRIES
+            and now - self._hello_sent_time >= HELLO_RETRY_INTERVAL
+        ):
+            self._hello_retries += 1
+            self._hello_sent_time = now
+            self._raw_send(self._hello_raw)
+
         # Retransmission
         retransmits: list[bytes] = self.reliability.get_retransmits()
         for raw_pkt in retransmits:
             self._raw_send(raw_pkt)
             logger.debug("Retransmitting packet on conn %d", self.conn_id)
+
+        # K10: a packet exceeded max_retransmits -> the peer is unreachable, close
+        failed = self.reliability.take_failed()
+        if failed:
+            logger.warning(
+                "Connection %d: %d packet(s) exceeded max retransmits – marking closed",
+                self.conn_id,
+                len(failed),
+            )
+            self.closed = True
+            return
+
+        # K7: the window may have opened (RTO or fast retransmit freed packets)
+        self._flush_send_queue()

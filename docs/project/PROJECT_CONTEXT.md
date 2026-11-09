@@ -125,7 +125,7 @@ Header format string: `!BIIBHIHI` (defined in [`src/common/packet.py`](file:///h
 - `HEADER_SIZE`: 22 bytes.
 - `AEAD_TAG_SIZE`: 16 bytes (AES-GCM tag appended to encrypted ciphertext).
 - **Correct Max Application Plaintext Chunk:** $1400 - 22 - 16 = \mathbf{1362 \text{ bytes}}$.  
-  *(Note: `constants.py` currently sets `MAX_APP_PAYLOAD = 1378`, which leads to an over-MTU packet of 1416 bytes when encrypted).*
+  *(Cập nhật 2026-11-08: `constants.py` hiện đã đặt `MAX_APP_PAYLOAD = MAX_UDP_PAYLOAD - HEADER_SIZE - 16 = 1362`; gói mã hóa đầy đủ dài đúng 1400 B (đã đo). Ghi chú 1378 trước đây đã lỗi thời.)*
 
 ---
 
@@ -141,6 +141,8 @@ Header format string: `!BIIBHIHI` (defined in [`src/common/packet.py`](file:///h
 ---
 
 ## 7. Known Critical Bugs & Blockers
+
+> **Cập nhật 2026-11-08:** các lỗi 2, 3, 4 (phía `stream.py`/`reliability.py`) và nonce/AAD ở mức module `crypto.py` đã được M2 sửa và có test. Lỗi 1 và 5 **vẫn còn trên đường chạy thật** vì `connection.py` chưa dùng API M2; xem `docs/audits/M2_AUDIT_REPORT.md` và `docs/project/M1_M2_INTEGRATION_CONTRACT.md`. Mục 6 ("0% automated tests") cũng đã lỗi thời: hiện có 113 test.
 
 1. **[CRITICAL] Nonce Reuse in AES-GCM (`crypto.py` + `connection.py`):**
    Client and Server share the same `session_key` and both derive the 12-byte nonce from `seq_num` starting from 0. The first packet in each direction shares the identical key and nonce, destroying AES-GCM security.

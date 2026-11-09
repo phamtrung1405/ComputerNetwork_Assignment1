@@ -19,6 +19,11 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -26,6 +31,8 @@ from common.constants import AES_KEY_SIZE, GCM_NONCE_SIZE, GCM_TAG_SIZE
 
 # Độ dài khóa công khai X25519 dạng raw bytes
 X25519_KEY_SIZE: int = 32
+ED25519_KEY_SIZE: int = 32
+ED25519_SIGNATURE_SIZE: int = 64
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bộ theo dõi Nonce phòng ngừa tái sử dụng (Nonce Reuse Guard)
@@ -100,6 +107,83 @@ def generate_keypair() -> tuple[X25519PrivateKey, bytes]:
         format=serialization.PublicFormat.Raw,
     )
     return private_key, public_bytes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Xác thực danh tính & Ký số Ed25519 (Server Authentication / Pinning)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_identity_keypair() -> tuple[Ed25519PrivateKey, bytes]:
+    """Tạo cặp khóa Ed25519 định danh tĩnh cho Server.
+
+    Returns:
+        Tuple chứa đối tượng Ed25519PrivateKey và 32 bytes khóa công khai raw.
+    """
+    private_key: Ed25519PrivateKey = Ed25519PrivateKey.generate()
+    public_bytes: bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return private_key, public_bytes
+
+
+def sign_server_hello(
+    identity_private_key: Ed25519PrivateKey,
+    conn_id: int,
+    server_public_bytes: bytes,
+) -> bytes:
+    """Tạo chữ ký số Ed25519 cho gói HELLO_ACK nhằm xác thực danh tính Server.
+
+    Thông điệp được ký là: b"STREAMCHAT-HELLO-ACK:" + conn_id (4 bytes BE) + server_public_bytes (32 bytes).
+
+    Args:
+        identity_private_key: Khóa riêng tư Ed25519 của Server.
+        conn_id: ID phiên kết nối uint32.
+        server_public_bytes: 32 bytes khóa trao đổi ephemeral X25519 của Server.
+
+    Returns:
+        64 bytes chữ ký số Ed25519.
+    """
+    if not isinstance(identity_private_key, Ed25519PrivateKey):
+        raise TypeError(f"identity_private_key phải là Ed25519PrivateKey, nhận: {type(identity_private_key)}")
+    if not isinstance(server_public_bytes, (bytes, bytearray)) or len(server_public_bytes) != X25519_KEY_SIZE:
+        raise ValueError(f"server_public_bytes phải là {X25519_KEY_SIZE} bytes")
+
+    msg_to_sign = b"STREAMCHAT-HELLO-ACK:" + conn_id.to_bytes(4, byteorder="big") + bytes(server_public_bytes)
+    return identity_private_key.sign(msg_to_sign)
+
+
+def verify_server_hello(
+    pinned_public_bytes: bytes,
+    conn_id: int,
+    server_public_bytes: bytes,
+    signature: bytes,
+) -> bool:
+    """Xác minh chữ ký số Ed25519 của Server dựa trên khóa công khai đã ghim (Pinning).
+
+    Args:
+        pinned_public_bytes: 32 bytes khóa công khai Ed25519 của Server đã được ghim trước tại Client.
+        conn_id: ID phiên kết nối uint32.
+        server_public_bytes: 32 bytes khóa ephemeral X25519 do Server gửi trong HELLO_ACK.
+        signature: 64 bytes chữ ký số nhận được.
+
+    Returns:
+        True nếu chữ ký hợp lệ và đúng danh tính Server đã ghim, False nếu không hợp lệ hoặc giả mạo.
+    """
+    if not isinstance(pinned_public_bytes, (bytes, bytearray)) or len(pinned_public_bytes) != ED25519_KEY_SIZE:
+        return False
+    if not isinstance(server_public_bytes, (bytes, bytearray)) or len(server_public_bytes) != X25519_KEY_SIZE:
+        return False
+    if not isinstance(signature, (bytes, bytearray)) or len(signature) != ED25519_SIGNATURE_SIZE:
+        return False
+
+    msg_to_verify = b"STREAMCHAT-HELLO-ACK:" + conn_id.to_bytes(4, byteorder="big") + bytes(server_public_bytes)
+    try:
+        pub_key = Ed25519PublicKey.from_public_bytes(bytes(pinned_public_bytes))
+        pub_key.verify(bytes(signature), msg_to_verify)
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
 
 
 def derive_shared_secret(

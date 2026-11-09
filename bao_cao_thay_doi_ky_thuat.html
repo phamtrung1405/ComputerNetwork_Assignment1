@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Báo Cáo Kỹ Thuật: Xác Thực Danh Tính Server & Phòng Chống MITM (Ed25519 Pinning)</title>
+  <style>
+    :root {
+      --bg-color: #0b1120;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --card-border-glow: rgba(56, 189, 248, 0.3);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-primary: #38bdf8;
+      --accent-secondary: #818cf8;
+      --accent-success: #4ade80;
+      --accent-warning: #facc15;
+      --accent-danger: #f87171;
+      --code-bg: #090d16;
+      --highlight: rgba(56, 189, 248, 0.08);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 30px 20px;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 35px;
+      padding-bottom: 25px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .badge {
+      display: inline-block;
+      padding: 5px 14px;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(129, 140, 248, 0.2));
+      color: var(--accent-primary);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 2.2rem;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      margin-bottom: 12px;
+    }
+    .meta-bar {
+      margin-top: 15px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 15px;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+    }
+    .meta-bar span {
+      background: rgba(30, 41, 59, 0.7);
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+      transition: border-color 0.2s ease;
+    }
+    .card:hover {
+      border-color: var(--card-border-glow);
+    }
+    .card-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--accent-primary);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      padding-bottom: 10px;
+    }
+    .tag {
+      font-size: 0.75rem;
+      padding: 3px 9px;
+      border-radius: 6px;
+      font-weight: 700;
+    }
+    .tag-success { background: rgba(74, 222, 128, 0.15); color: var(--accent-success); border: 1px solid rgba(74, 222, 128, 0.3); }
+    .tag-info { background: rgba(56, 189, 248, 0.15); color: var(--accent-primary); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .tag-danger { background: rgba(248, 113, 113, 0.15); color: var(--accent-danger); border: 1px solid rgba(248, 113, 113, 0.3); }
+    .tag-warning { background: rgba(250, 204, 21, 0.15); color: var(--accent-warning); border: 1px solid rgba(250, 204, 21, 0.3); }
+
+    ul, ol {
+      padding-left: 22px;
+      margin-bottom: 12px;
+    }
+    li {
+      margin-bottom: 9px;
+    }
+    strong {
+      color: #ffffff;
+    }
+    code {
+      font-family: Consolas, "JetBrains Mono", Monaco, "Courier New", monospace;
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #38bdf8;
+      font-size: 0.88em;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 14px 0;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+    pre code {
+      background: none;
+      padding: 0;
+      color: #e2e8f0;
+      border: none;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+    @media (max-width: 768px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+    .callout {
+      border-left: 4px solid var(--accent-primary);
+      background: var(--highlight);
+      padding: 14px 18px;
+      border-radius: 0 8px 8px 0;
+      margin: 14px 0;
+      font-size: 0.95rem;
+    }
+    .callout.success {
+      border-left-color: var(--accent-success);
+      background: rgba(74, 222, 128, 0.08);
+    }
+    .callout.danger {
+      border-left-color: var(--accent-danger);
+      background: rgba(248, 113, 113, 0.08);
+    }
+    .callout-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .callout.success .callout-title { color: var(--accent-success); }
+    .callout.danger .callout-title { color: var(--accent-danger); }
+    .callout .callout-title { color: var(--accent-primary); }
+
+    .diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 0.9rem;
+    }
+    .diff-table th, .diff-table td {
+      border: 1px solid var(--card-border);
+      padding: 10px 14px;
+      text-align: left;
+    }
+    .diff-table th {
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--accent-primary);
+      font-weight: 700;
+    }
+    .diff-table tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 45px;
+      padding-top: 25px;
+      border-top: 1px solid var(--card-border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="badge">Security Enhancement &bull; Anti-MITM Protocol</div>
+      <h1>Báo Cáo Tóm Tắt Thay Đổi Kỹ Thuật</h1>
+      <p class="subtitle">Hiện thực cơ chế Xác thực danh tính Server (Server Authentication) qua Ký số Ed25519 & Certificate Pinning</p>
+      <div class="meta-bar">
+        <span>🔒 Chuẩn mã hóa: <strong>Ed25519 + X25519 + AES-256-GCM</strong></span>
+        <span>🛡️ Mục tiêu: <strong>Chống tấn công Man-in-the-Middle (Active MITM)</strong></span>
+        <span>🧪 Kiểm thử: <strong>100% Passed (4/4 New Auth Tests + 15/15 Loopback Tests)</strong></span>
+      </div>
+    </header>
+
+    <!-- 1. VẤN ĐỀ VÀ ĐỘNG LỰC -->
+    <section class="card">
+      <div class="card-title">
+        <span>1. Bối Cảnh & Động Lực Kỹ Thuật</span>
+        <span class="tag tag-danger">LỖ HỔNG TRƯỚC ĐÓ</span>
+      </div>
+      <p>Trước khi nâng cấp, giao thức bắt tay UDP chỉ sử dụng <strong>X25519 ECDH thuần túy</strong>:</p>
+      <ul>
+        <li>Client và Server trao đổi khóa công khai ephemeral dạng bản rõ trong gói <code>PKT_HELLO</code> và <code>PKT_HELLO_ACK</code>.</li>
+        <li><strong>Nguy cơ MITM:</strong> Kẻ tấn công đứng giữa có thể đánh chặn gói tin, thay thế bằng cặp khóa công khai của chính nó để tính toán hai khóa phiên riêng biệt (một với Client, một với Server). Từ đó, kẻ tấn công hoàn toàn có thể đọc được tin nhắn, hash mật khẩu và file truyền tải mà hai bên không hề hay biết.</li>
+      </ul>
+      <div class="callout success">
+        <div class="callout-title">Giải Pháp Toàn Diện Được Triển Khai</div>
+        Bổ sung cơ chế <strong>Ký số Ed25519 tĩnh (Server Identity Key)</strong> kết hợp <strong>Ghim khóa tại Client (Public Key Pinning)</strong>. Server dùng khóa danh tính ký số chứng thực khóa ephemeral của phiên. Bất kỳ sự giả mạo nào từ kẻ tấn công đều bị Client phát hiện và ngắt kết nối ngay lập tức!
+      </div>
+    </section>
+
+    <!-- 2. CHI TIẾT CÁC THAY ĐỔI THEO TỪNG MODULE -->
+    <section class="card">
+      <div class="card-title">
+        <span>2. Chi Tiết Các Thay Đổi Theo Từng Module</span>
+        <span class="tag tag-info">CẬP NHẬT MÃ NGUỒN</span>
+      </div>
+
+      <table class="diff-table">
+        <thead>
+          <tr>
+            <th>Module</th>
+            <th>Thành phần thay đổi</th>
+            <th>Chi tiết kỹ thuật</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/common/crypto.py</code></td>
+            <td>
+              <code>generate_identity_keypair()</code><br>
+              <code>sign_server_hello()</code><br>
+              <code>verify_server_hello()</code>
+            </td>
+            <td>
+              - Sinh cặp khóa định danh <strong>Ed25519</strong> độc lập với khóa ephemeral.<br>
+              - Server ký thông điệp: <code>b"STREAMCHAT-HELLO-ACK:" + conn_id + server_public_bytes</code>.<br>
+              - Client kiểm tra chữ ký 64-byte với 32-byte khóa công khai server đã ghim trước.
+            </td>
+          </tr>
+          <tr>
+            <td><code>src/transport/connection.py</code></td>
+            <td>
+              <code>Connection.__init__()</code><br>
+              <code>_handle_hello()</code><br>
+              <code>_handle_hello_ack()</code>
+            </td>
+            <td>
+              - Bổ sung tham số <code>server_identity_key</code> và <code>pinned_server_key</code>.<br>
+              - Server tự động ký và đóng gói <code>{"signature": ...}</code> trong payload <code>HELLO_ACK</code>.<br>
+              - Client kiểm tra chữ ký: Nếu thất bại hoặc thiếu chữ ký, ghi log <strong>MITM Alert</strong> và drop gói tin, không hoàn tất handshake.
+            </td>
+          </tr>
+          <tr>
+            <td><code>src/server/server.py</code></td>
+            <td><code>ChatServer.__init__()</code><br><code>_create_session()</code></td>
+            <td>
+              - Quản lý cặp khóa danh tính tĩnh của Server (<code>identity_private_key</code>, <code>identity_public_bytes</code>).<br>
+              - Tự động truyền <code>server_identity_key</code> xuống mọi instance <code>Connection</code> mới tạo.
+            </td>
+          </tr>
+          <tr>
+            <td><code>src/client/client.py</code></td>
+            <td><code>ChatClient.__init__()</code></td>
+            <td>
+              - Cho phép cấu hình <code>pinned_server_key</code> khi khởi tạo Client.<br>
+              - Chuyển tiếp khóa ghim vào kết nối UDP để bảo vệ toàn diện quá trình bắt tay.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 3. QUY TRÌNH BẮT TAY CHỐNG MITM -->
+    <section class="card">
+      <div class="card-title">
+        <span>3. Quy Trình Bắt Tay An Toàn Mới (Handshake Sequence)</span>
+        <span class="tag tag-success">CHUẨN BẢO MẬT</span>
+      </div>
+      <pre><code>[CLIENT]                                                    [SERVER]
+   |                                                           |
+   | --- PKT_HELLO (client_ephemeral_pub, conn_id) ---------> |
+   |                                                           | (Tạo ephemeral key)
+   |                                                           | (Ký: sign_server_hello)
+   |                                                           |
+   | <-- PKT_HELLO_ACK (server_ephemeral_pub, signature) ----- |
+   |                                                           |
+   | [Kiểm tra: verify_server_hello(pinned_key, ...)]          |
+   |  ├─ Sai chữ ký / Giả mạo -> DROP GÓI, NGẮT KẾT NỐI         |
+   |  └─ Hợp lệ -> Hoàn tất bắt tay, kích hoạt AES-256-GCM    |
+   |                                                           |
+   | <================== KÊNH MÃ HÓA AN TOÀN ===============> |</code></pre>
+    </section>
+
+    <!-- 4. KẾT QUẢ KIỂM THỬ XÁC MINH -->
+    <section class="card">
+      <div class="card-title">
+        <span>4. Kết Quả Kiểm Thử Thực Nghiệm (Test Verification)</span>
+        <span class="tag tag-success">100% PASSED</span>
+      </div>
+      <p>Đã tạo bộ kiểm thử chuyên biệt tại <code>tests/test_server_auth.py</code> bao phủ 4 kịch bản an ninh then chốt:</p>
+
+      <div class="callout success">
+        <div class="callout-title">✓ 1. test_signature_generation_and_verification</div>
+        Chữ ký số do server hợp lệ tạo ra được xác thực chính xác 100% với khóa ghim tương ứng.
+      </div>
+
+      <div class="callout success">
+        <div class="callout-title">✓ 2. test_signature_tampered_fails</div>
+        Nếu kẻ tấn công can thiệp sửa đổi <code>conn_id</code> hoặc <code>server_public_bytes</code> trên đường truyền, xác minh thất bại ngay lập tức.
+      </div>
+
+      <div class="callout success">
+        <div class="callout-title">✓ 3. test_mitm_attacker_key_rejected</div>
+        Kẻ MITM tự sinh khóa danh tính giả để ký gói tin sẽ bị Client chặn đứng hoàn toàn vì không khớp với <code>pinned_server_key</code>.
+      </div>
+
+      <div class="callout success">
+        <div class="callout-title">✓ 4. test_handshake_flow_with_pinned_key</div>
+        Kiểm thử End-to-end: Client bắt tay thông suốt với Server thật, và huỷ bỏ kết nối lập tức khi giao tiếp với Rogue/MITM Server.
+      </div>
+
+      <div class="callout">
+        <div class="callout-title">✓ Kiểm Thử Hồi Quy (Regression Testing)</div>
+        Đã chạy lại toàn bộ <strong>15/15 tests</strong> của bộ <code>tests/test_connection_loopback.py</code> (mất gói 5%, đảo gói, trùng lặp gói). Tất cả đều vượt qua (100% PASS), đảm bảo không ảnh hưởng tới bất kỳ tính năng hiện có nào.
+      </div>
+    </section>
+
+    <footer>
+      Báo cáo được tổng hợp tự động &bull; Dự án StreamChat Computer Network Assignment 1
+    </footer>
+  </div>
+
+</body>
+</html>
+

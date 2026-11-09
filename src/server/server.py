@@ -15,6 +15,7 @@ import selectors
 import socket
 import threading
 import time
+from cryptography.hazmat.primitives import serialization
 from typing import Optional, Any
 
 from common import packet
@@ -25,6 +26,7 @@ from common.constants import (
     RECV_BUFFER_SIZE,
     TICK_INTERVAL,
 )
+from common.crypto import generate_identity_keypair
 from transport.connection import Connection
 from server.session import Session
 
@@ -43,11 +45,25 @@ class ChatServer:
     Each client is managed by an independent Session with thread-safe routing.
     """
 
-    def __init__(self) -> None:
-        """Initialize server with session management data structures."""
+    def __init__(self, identity_key: Optional[Any] = None) -> None:
+        """Initialize server with session management data structures.
+
+        Args:
+            identity_key: Optional Ed25519PrivateKey instance for server signing.
+        """
         self._sock: Optional[socket.socket] = None
         self._sel: Optional[selectors.DefaultSelector] = None
         self._running: bool = False
+
+        # Server Identity Key for Ed25519 Signing / Pinning
+        if identity_key is not None:
+            self.identity_private_key = identity_key
+            self.identity_public_bytes = identity_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+        else:
+            self.identity_private_key, self.identity_public_bytes = generate_identity_keypair()
 
         # -- Session management --
         # conn_id -> Session
@@ -238,6 +254,7 @@ class ChatServer:
             conn_id=conn_id,
             is_server=True,
             on_app_message=lambda sid, data: self._on_app_message(conn_id, sid, data),
+            server_identity_key=self.identity_private_key,
         )
 
         session = Session(

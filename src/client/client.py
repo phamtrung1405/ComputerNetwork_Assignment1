@@ -44,12 +44,14 @@ class ChatClient:
         self,
         server_ip: str = DEFAULT_SERVER_HOST,
         server_port: int = DEFAULT_SERVER_PORT,
+        pinned_server_key: Optional[bytes] = None,
     ) -> None:
         """Initialize raw UDP socket and create Connection.
 
         Args:
             server_ip: Server IP address.
             server_port: Server UDP port.
+            pinned_server_key: Optional 32-byte Ed25519 public key of server for pinning.
         """
         self._server_addr: tuple[str, int] = (server_ip, server_port)
         self._sock: socket.socket = socket.socket(
@@ -63,6 +65,7 @@ class ChatClient:
             remote_addr=self._server_addr,
             is_server=False,
             on_app_message=self._on_app_message,
+            pinned_server_key=pinned_server_key,
         )
 
         self._running: bool = False

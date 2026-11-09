@@ -45,6 +45,8 @@ from common.crypto import (
     derive_shared_secret,
     encrypt,
     decrypt,
+    sign_server_hello,
+    verify_server_hello,
 )
 from transport.reliability import ReliabilityManager
 from transport.stream import Stream
@@ -74,6 +76,8 @@ class Connection:
         conn_id: int = 0,
         is_server: bool = False,
         on_app_message: Optional[Callable[[int, bytes], None]] = None,
+        server_identity_key: Optional[Any] = None,
+        pinned_server_key: Optional[bytes] = None,
     ) -> None:
         """Initialize Connection.
 
@@ -84,12 +88,16 @@ class Connection:
             is_server: ``True`` if server side.
             on_app_message: Callback ``(stream_id, data)`` when receiving
                             a complete message from a Stream.
+            server_identity_key: Server-side Ed25519PrivateKey for signing HELLO_ACK.
+            pinned_server_key: Client-side pinned 32-byte Ed25519 public key of server.
         """
         self.sock: socket.socket = sock
         self.remote_addr: tuple[str, int] = remote_addr
         self.conn_id: int = conn_id if conn_id else random.randint(1, 0xFFFFFFFF)
         self.is_server: bool = is_server
         self.on_app_message: Optional[Callable[[int, bytes], None]] = on_app_message
+        self.server_identity_key: Optional[Any] = server_identity_key
+        self.pinned_server_key: Optional[bytes] = pinned_server_key
 
         # Crypto
         self._private_key: Optional[X25519PrivateKey] = None
@@ -525,11 +533,18 @@ class Connection:
             logger.warning("Invalid HELLO public key: %s", exc)
             return
 
-        # Send HELLO_ACK with server public key
-        ack_payload: bytes = json.dumps({
+        # Send HELLO_ACK with server public key, optionally signed by identity key
+        ack_data: dict[str, Any] = {
             "public_key": self._public_bytes.hex(),
             "conn_id": self.conn_id,
-        }).encode("utf-8")
+        }
+        if self.server_identity_key is not None:
+            signature: bytes = sign_server_hello(
+                self.server_identity_key, self.conn_id, self._public_bytes
+            )
+            ack_data["signature"] = signature.hex()
+
+        ack_payload: bytes = json.dumps(ack_data).encode("utf-8")
 
         raw: bytes = packet.pack(
             msg_type=PKT_HELLO_ACK,
@@ -561,6 +576,28 @@ class Connection:
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
             logger.warning("Malformed HELLO_ACK payload: %s", exc)
             return
+
+        # Verify Server Signature if pinning is configured
+        if self.pinned_server_key is not None:
+            sig_hex = info.get("signature")
+            if not sig_hex:
+                logger.error(
+                    "MITM Alert: Server did not provide signature for pinned key on conn_id=%d",
+                    self.conn_id,
+                )
+                return
+            try:
+                sig_bytes = bytes.fromhex(sig_hex)
+            except ValueError:
+                logger.error("MITM Alert: Invalid signature hex on conn_id=%d", self.conn_id)
+                return
+
+            if not verify_server_hello(self.pinned_server_key, self.conn_id, peer_pub_bytes, sig_bytes):
+                logger.error(
+                    "MITM Alert: Server signature verification failed for pinned key on conn_id=%d!",
+                    self.conn_id,
+                )
+                return
 
         if self._private_key is None:
             logger.warning("Received HELLO_ACK without sending HELLO")

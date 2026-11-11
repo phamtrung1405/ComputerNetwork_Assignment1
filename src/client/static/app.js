@@ -730,3 +730,29 @@ btnDisconnect.addEventListener("click", () => {
     onlineUsersDiv.innerHTML = '<p class="empty-state">No other users online</p>';
     onlineCountSpan.textContent = "0";
 });
+
+// ═══════════════════════════════════════════════
+// THEME SWITCHER (DARK / LIGHT MODE)
+// ═══════════════════════════════════════════════
+
+const btnThemeToggle = document.getElementById("btn-theme-toggle");
+const loginThemeToggle = document.getElementById("login-theme-toggle");
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
+    const nextTheme = currentTheme === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    try {
+        localStorage.setItem("streamchat_theme", nextTheme);
+    } catch (e) {
+        console.warn("Storage error saving theme:", e);
+    }
+}
+
+if (btnThemeToggle) {
+    btnThemeToggle.addEventListener("click", toggleTheme);
+}
+if (loginThemeToggle) {
+    loginThemeToggle.addEventListener("click", toggleTheme);
+}
+

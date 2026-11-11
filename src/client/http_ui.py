@@ -64,6 +64,8 @@ class HttpUI:
         self._sse_lock: threading.Lock = threading.Lock()
         self._message_history: list[dict] = []
         self._history_lock: threading.Lock = threading.Lock()
+        self._online_users: list[str] = []
+        self._users_lock: threading.Lock = threading.Lock()
 
     def set_client(self, client: ChatClient) -> None:
         """Assign ChatClient after initialization.
@@ -173,6 +175,8 @@ class HttpUI:
                 self._serve_static(client_socket, filename)
             elif method == "GET" and path == "/api/status":
                 self._handle_status(client_socket)
+            elif method == "GET" and path == "/api/users":
+                self._handle_users(client_socket)
             elif method == "GET" and path == "/api/history":
                 self._handle_history(client_socket)
             elif method == "GET" and path == "/api/download":
@@ -252,6 +256,8 @@ class HttpUI:
         }
         with self._history_lock:
             self._message_history.clear()
+        with self._users_lock:
+            self._online_users.clear()
         if self._client is None:
             self._send_json_response(
                 client_socket,
@@ -301,11 +307,50 @@ class HttpUI:
                 }
                 payload = f"data: {json.dumps(auth_event, ensure_ascii=False)}\n\n".encode("utf-8")
                 client_socket.sendall(payload)
+
+                # Push current online users immediately upon SSE connection
+                with self._users_lock:
+                    cur_users = list(self._online_users)
+                if not cur_users and getattr(self._client, "online_users", None):
+                    cur_users = list(self._client.online_users)
+                if cur_users:
+                    users_event = {
+                        "type": "USER_LIST",
+                        "users": cur_users,
+                    }
+                    payload = f"data: {json.dumps(users_event, ensure_ascii=False)}\n\n".encode("utf-8")
+                    client_socket.sendall(payload)
+                elif hasattr(self._client, "request_user_list"):
+                    self._client.request_user_list()
         except OSError:
             try:
                 client_socket.close()
             except OSError:
                 pass
+
+    def _record_to_history(self, event: dict) -> None:
+        """Record an event into message history with deduplication for files."""
+        with self._history_lock:
+            ev_type = event.get("type")
+            if ev_type == "FILE_READY":
+                sid = event.get("stream_id")
+                found = False
+                for idx, existing in enumerate(self._message_history):
+                    if (
+                        existing.get("type") == "FILE_READY"
+                        and sid is not None
+                        and existing.get("stream_id") == sid
+                    ):
+                        self._message_history[idx].update(event)
+                        found = True
+                        break
+                if not found:
+                    self._message_history.append(dict(event))
+            else:
+                self._message_history.append(dict(event))
+
+            if len(self._message_history) > 500:
+                self._message_history.pop(0)
 
     def _sse_pump(self) -> None:
         """Continuously poll event_queue and push SSE events."""
@@ -325,14 +370,16 @@ class HttpUI:
             try:
                 event: dict = self._client.event_queue.get(timeout=0.5)
                 ev_type = event.get("type")
-                if ev_type in ("MSG", "SYSTEM", "FILE_READY", "FILE_COMPLETE"):
-                    with self._history_lock:
-                        self._message_history.append(event)
-                        if len(self._message_history) > 500:
-                            self._message_history.pop(0)
+                if ev_type == "USER_LIST":
+                    with self._users_lock:
+                        self._online_users = list(event.get("users", []))
+                elif ev_type in ("MSG", "SYSTEM", "FILE_READY", "FILE_COMPLETE"):
+                    self._record_to_history(event)
                 elif ev_type == "KICKED":
                     with self._history_lock:
                         self._message_history.clear()
+                    with self._users_lock:
+                        self._online_users.clear()
                 self._broadcast_sse(event)
             except queue.Empty:
                 # Send periodic heartbeat comment to keep connection alive
@@ -559,18 +606,17 @@ class HttpUI:
             stream_id = self._client.start_file_transfer(saved_path, target)
             if stream_id is not None:
                 dl_url = f"/api/download?stream_id={stream_id}&filename={safe_filename}"
-                with self._history_lock:
-                    self._message_history.append({
-                        "type": "FILE_READY",
-                        "from": self._client.username,
-                        "filename": safe_filename,
-                        "size": content_length,
-                        "target": target,
-                        "stream_id": stream_id,
-                        "download_url": dl_url,
-                        "timestamp": time.time(),
-                        "completed": True,
-                    })
+                self._record_to_history({
+                    "type": "FILE_READY",
+                    "from": self._client.username,
+                    "filename": safe_filename,
+                    "size": content_length,
+                    "target": target,
+                    "stream_id": stream_id,
+                    "download_url": dl_url,
+                    "timestamp": time.time(),
+                    "completed": True,
+                })
                 self._send_json_response(
                     client_socket,
                     200,
@@ -599,29 +645,51 @@ class HttpUI:
             except OSError:
                 pass
 
+    def _get_active_users(self) -> list[str]:
+        """Get the latest list of active online users."""
+        with self._users_lock:
+            cur_users = list(self._online_users)
+        if not cur_users and self._client and getattr(self._client, "online_users", None):
+            cur_users = list(self._client.online_users)
+        return cur_users
+
     def _handle_status(self, client_socket: socket.socket) -> None:
         """Handle GET /api/status.
 
         Args:
             client_socket: Client socket.
         """
+        cur_users = self._get_active_users()
         status: dict = {
             "authenticated": self._client.is_authenticated if self._client else False,
             "username": self._client.username if self._client else None,
             "connected": self._client is not None and self._client._running,
+            "users": cur_users,
         }
         self._send_json_response(client_socket, 200, status)
+        client_socket.close()
+
+    def _handle_users(self, client_socket: socket.socket) -> None:
+        """Handle GET /api/users to retrieve online users directly."""
+        cur_users = self._get_active_users()
+        resp: dict = {
+            "status": "ok",
+            "users": cur_users,
+        }
+        self._send_json_response(client_socket, 200, resp)
         client_socket.close()
 
     def _handle_history(self, client_socket: socket.socket) -> None:
         """Handle GET /api/history to restore chat messages on reload."""
         with self._history_lock:
             msgs = list(self._message_history)
+        cur_users = self._get_active_users()
         resp = {
             "status": "ok",
             "authenticated": self._client.is_authenticated if self._client else False,
             "username": self._client.username if self._client else None,
             "messages": msgs,
+            "users": cur_users,
         }
         self._send_json_response(client_socket, 200, resp)
         client_socket.close()

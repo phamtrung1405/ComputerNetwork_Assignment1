@@ -46,6 +46,7 @@ class Session:
         on_auth_success: Optional[Callable[[int, str], None]] = None,
         on_auth_logout: Optional[Callable[[int, str], None]] = None,
         file_chunk_fn: Optional[Callable[[str, str, int, bytes], bool]] = None,
+        get_users_fn: Optional[Callable[[], list[str]]] = None,
     ) -> None:
         """Initialize Session.
 
@@ -74,6 +75,7 @@ class Session:
         self._on_auth_success: Optional[Callable[[int, str], None]] = on_auth_success
         self._on_auth_logout: Optional[Callable[[int, str], None]] = on_auth_logout
         self._file_chunk_fn: Optional[Callable[[str, str, int, bytes], bool]] = file_chunk_fn
+        self._get_users_fn: Optional[Callable[[], list[str]]] = get_users_fn
         self._file_transfers: dict[int, tuple[str, int, int]] = {}
 
     # ----------------------- Payload processing -----------------------
@@ -129,6 +131,12 @@ class Session:
             self._process_logout()
         elif msg_type == "MSG":
             self._process_msg(msg)
+        elif msg_type in ("USER_LIST_REQ", "GET_USERS"):
+            users = self._get_users_fn() if self._get_users_fn else ([self.username] if self.username else [])
+            self._send_app_message({
+                "type": "USER_LIST",
+                "users": users,
+            })
         elif msg_type in ("FILE", "FILE_START", "FILE_READY"):
             self._process_file(msg)
         elif msg_type == "FILE_DATA":

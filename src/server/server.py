@@ -59,6 +59,7 @@ class ChatServer:
 
         # username -> conn_id (mapping for unicast routing)
         self._user_to_conn: dict[str, int] = {}
+        self._last_user_list_broadcast: float = 0.0
 
     # ----------------------- Startup -----------------------
 
@@ -249,6 +250,7 @@ class ChatServer:
             on_auth_success=self._on_auth_success,
             on_auth_logout=self._on_auth_logout,
             file_chunk_fn=self._route_file_chunk,
+            get_users_fn=self.get_online_users,
         )
 
         self._sessions[conn_id] = session
@@ -532,6 +534,17 @@ class ChatServer:
 
             if departed_users:
                 self.broadcast_user_list()
+
+            # Periodic broadcast (every 5 seconds) to ensure all clients stay synchronized
+            now = time.monotonic()
+            if now - self._last_user_list_broadcast >= 5.0:
+                self._last_user_list_broadcast = now
+                with self._sessions_lock:
+                    has_auth = any(
+                        s.authenticated and not s.connection.closed for s in self._sessions.values()
+                    )
+                if has_auth:
+                    self.broadcast_user_list()
 
     # ----------------------- Cleanup -----------------------
 

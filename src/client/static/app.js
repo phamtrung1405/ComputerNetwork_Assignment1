@@ -778,6 +778,9 @@ async function checkAndRestoreSession() {
                 username: uname,
                 message: `Chào mừng trở lại @${uname}!`,
             });
+            if (Array.isArray(status.users) && status.users.length > 0) {
+                handleUserList({ users: status.users });
+            }
             initSSE(uname);
             await restoreMessageHistory();
         } else {
@@ -796,6 +799,9 @@ async function restoreMessageHistory() {
         const res = await fetch("/api/history");
         if (!res.ok) return;
         const data = await res.json();
+        if (data.users && Array.isArray(data.users) && data.users.length > 0) {
+            handleUserList({ users: data.users });
+        }
         if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
             messagesDiv.innerHTML = `
                 <div class="system-message">
@@ -810,11 +816,7 @@ async function restoreMessageHistory() {
                 } else if (mtype === "SYSTEM") {
                     addSystemMessage(m.message);
                 } else if (mtype === "FILE_READY") {
-                    const isOut = (m.from || "").toLowerCase() === currentUsername;
-                    addFileMessage(m.from, m.filename, m.size, m.download_url, isOut, m.target, m.stream_id);
-                    if (m.stream_id) {
-                        addFileTransferSidebar(m.stream_id, m.filename, m.size, m.download_url);
-                    }
+                    handleFileReady(m);
                 }
             }
             scrollToBottom();
@@ -823,6 +825,21 @@ async function restoreMessageHistory() {
         console.warn("Restore history error:", err);
     }
 }
+
+// Periodic user list synchronization every 5 seconds
+setInterval(async () => {
+    if (isConnected && currentUsername) {
+        try {
+            const res = await fetch("/api/status");
+            if (res.ok) {
+                const data = await res.json();
+                if (data.users && Array.isArray(data.users)) {
+                    handleUserList({ users: data.users });
+                }
+            }
+        } catch (_) {}
+    }
+}, 5000);
 
 // Automatically check session on page load / reload
 if (document.readyState === "loading") {

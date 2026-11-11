@@ -80,6 +80,8 @@ class ChatClient:
         self._incoming_files: dict[int, dict] = {}
         self._download_dir: str = os.path.join(tempfile.gettempdir(), "streamchat_downloads")
         os.makedirs(self._download_dir, exist_ok=True)
+        # Track active online users
+        self.online_users: list[str] = []
 
     # ----------------------- Connection -----------------------
 
@@ -315,10 +317,12 @@ class ChatClient:
         elif msg.get("type") == "LOGOUT_RESP":
             self._authenticated = False
             self._username = None
+            self.online_users.clear()
         elif msg.get("type") == "KICKED":
             self._authenticated = False
             self._username = None
             self._running = False
+            self.online_users.clear()
             if self._connection:
                 self._connection.closed = True
             try:
@@ -335,6 +339,8 @@ class ChatClient:
                 is_server=False,
                 on_app_message=self._on_app_message,
             )
+        elif msg.get("type") == "USER_LIST":
+            self.online_users = list(msg.get("users", []))
         elif msg.get("type") in ("FILE", "FILE_READY"):
             sid = msg.get("stream_id")
             fname = msg.get("filename", "")
@@ -482,7 +488,13 @@ class ChatClient:
         self._send_json({"type": "LOGOUT"})
         self._authenticated = False
         self._username = None
+        self.online_users.clear()
         logger.info("Client logged out")
+
+    def request_user_list(self) -> None:
+        """Request updated user list from server over Stream 0."""
+        if self._authenticated and self._connection and not self._connection.closed:
+            self._send_json({"type": "USER_LIST_REQ"})
 
     @property
     def is_authenticated(self) -> bool:

@@ -51,5 +51,6 @@ __pycache__/
 uploads/
 
 agent_fixes/
+agent_fixes_v2/
 evaluation_output/
 tests/

@@ -166,7 +166,7 @@ loginForm.addEventListener("submit", async (e) => {
         const data = await response.json();
 
         if (response.ok && data.status === "ok") {
-            currentUsername = data.username || username;
+            currentUsername = (data.username || username).trim().toLowerCase();
             initSSE(currentUsername);
             handleAuthSuccess(data);
         } else {
@@ -243,9 +243,13 @@ function handleKicked(data) {
 }
 
 function handleAuthSuccess(data) {
-    currentUsername = data.username || currentUsername;
+    currentUsername = (data.username || currentUsername).trim().toLowerCase();
     displayUsername.textContent = currentUsername;
     userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
+
+    loginBtn.querySelector(".btn-text").textContent = "Login";
+    loginBtn.querySelector(".btn-spinner").classList.add("hidden");
+    loginBtn.disabled = false;
 
     loginScreen.classList.remove("active");
     chatScreen.classList.add("active");
@@ -330,7 +334,10 @@ navAll.addEventListener("click", () => {
 // ═══════════════════════════════════════════════
 
 function handleChatMessage(data) {
-    const isOutgoing = data.from === currentUsername;
+    if (data.from === currentUsername) {
+        return;
+    }
+    const isOutgoing = false;
     addChatMessage(data.from, data.text, data.timestamp, isOutgoing, data.is_private, data.target);
 }
 
@@ -407,6 +414,9 @@ async function sendMessage() {
         const result = await res.json();
         if (!res.ok || result.status !== "ok") {
             addSystemMessage("⚠️ Failed to send message: " + (result.message || "Server error"));
+        } else {
+            const isPrivate = target !== "all";
+            addChatMessage(currentUsername, actualText, Date.now() / 1000, true, isPrivate, target);
         }
     } catch (err) {
         addSystemMessage("⚠️ Network error sending message: " + err.message);
@@ -427,38 +437,69 @@ msgInput.addEventListener("keydown", (e) => {
 // ═══════════════════════════════════════════════
 
 function handleFileReady(data) {
-    const isOutgoing = data.from === currentUsername;
-    const isTarget = data.target === "all" || data.target === currentUsername || isOutgoing;
+    const fromUser = (data.from || "").toLowerCase();
+    const myUser = (currentUsername || "").toLowerCase();
+    const isOutgoing = fromUser === myUser;
+    const isTarget = data.target === "all" || (data.target || "").toLowerCase() === myUser || isOutgoing;
     if (!isTarget) return;
 
+    // If outgoing, check if already added locally
+    if (isOutgoing) {
+        const existing = (data.stream_id && document.querySelector(`.message.outgoing[data-stream-id="${data.stream_id}"]`)) ||
+                         document.querySelector(`.message.outgoing[data-filename="${encodeURIComponent(data.filename)}"]`);
+        if (existing) {
+            if (data.download_url) {
+                const dlBtn = existing.querySelector(".btn-download-file");
+                if (dlBtn && dlBtn.classList.contains("disabled")) {
+                    dlBtn.href = data.download_url;
+                    dlBtn.classList.remove("disabled");
+                    dlBtn.removeAttribute("style");
+                }
+            }
+            addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
+            return;
+        }
+    }
+
     // 1. Add file card to chat window
-    addFileMessage(data.from, data.filename, data.size, data.download_url, isOutgoing, data.target);
+    addFileMessage(data.from, data.filename, data.size, data.download_url, isOutgoing, data.target, data.stream_id);
 
     // 2. Add to file list in sidebar
     addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
 }
 
-function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target) {
+function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target, streamId = null) {
     const msgEl = document.createElement("div");
     msgEl.className = `message ${isOutgoing ? "outgoing" : "incoming"}`;
+    if (streamId) msgEl.dataset.streamId = streamId;
+    msgEl.dataset.filename = encodeURIComponent(filename);
 
     const senderEl = document.createElement("div");
     senderEl.className = "message-sender";
-    const targetText = target !== "all" ? ` (Private to: @${target})` : "";
-    senderEl.textContent = isOutgoing ? `You sent a file${targetText}:` : `@${sender} sent a file${targetText}:`;
+    const isPrivate = target && target !== "all";
+    if (isPrivate) {
+        senderEl.innerHTML = isOutgoing
+            ? `You sent a file ➔ @${escapeHtml(target)} <span class="private-badge">🔒 Private</span>`
+            : `@${escapeHtml(sender)} sent a file <span class="private-badge">🔒 Private</span>`;
+    } else {
+        senderEl.textContent = isOutgoing ? "You sent a file:" : `@${sender} sent a file:`;
+    }
 
     const bubbleEl = document.createElement("div");
     bubbleEl.className = "message-bubble";
 
     const card = document.createElement("div");
     card.className = "file-card-msg";
+    const dlAttr = downloadUrl
+        ? `href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename)}"`
+        : `href="javascript:void(0)" class="btn-download-file disabled" style="opacity:0.6; pointer-events:none;"`;
     card.innerHTML = `
         <div class="file-card-icon">📁</div>
         <div class="file-card-details">
             <span class="file-card-name" title="${escapeHtml(filename)}">${escapeHtml(filename)}</span>
             <span class="file-card-size">${formatBytes(size)}</span>
         </div>
-        <a href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename)}">
+        <a ${dlAttr}>
             📥 Download
         </a>
     `;
@@ -620,6 +661,21 @@ fileSendBtn.addEventListener("click", () => {
             if (xhr.status >= 200 && xhr.status < 300 && result.status === "ok") {
                 fileSendBtn.textContent = "✅ Upload successful!";
                 addSystemMessage(`📤 Successfully sent file ${fileToSend.name}!`);
+
+                // Display outgoing file card immediately for the sender
+                addFileMessage(
+                    currentUsername,
+                    fileToSend.name,
+                    fileToSend.size,
+                    result.download_url || "",
+                    true,
+                    target,
+                    result.stream_id || null
+                );
+                if (result.stream_id) {
+                    addFileTransferSidebar(result.stream_id, fileToSend.name, fileToSend.size, result.download_url || "");
+                }
+
                 setTimeout(() => {
                     closeFileDialog();
                 }, 1200);

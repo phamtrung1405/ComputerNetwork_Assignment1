@@ -49,3 +49,7 @@ __pycache__/
 
 # Upload file
 uploads/
+
+*.html
+agent_fixes/
+evaluation_output/

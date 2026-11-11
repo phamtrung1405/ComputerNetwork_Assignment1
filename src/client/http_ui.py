@@ -163,7 +163,7 @@ class HttpUI:
             # -- Routing --
             if method == "GET" and path == "/":
                 self._serve_static(client_socket, "index.html")
-            elif method == "GET" and path == "/events":
+            elif method == "GET" and path in ("/events", "/api/events"):
                 self._handle_sse(client_socket)
                 return  # SSE keeps the connection open
             elif method == "GET" and path.startswith("/static/"):
@@ -279,6 +279,15 @@ class HttpUI:
             with self._sse_lock:
                 self._sse_clients.append(client_socket)
             logger.debug("SSE client connected")
+            if self._client is not None and self._client.is_authenticated:
+                auth_event = {
+                    "type": "AUTH_RESP",
+                    "success": True,
+                    "username": self._client.username,
+                    "message": f"Welcome @{self._client.username}!",
+                }
+                payload = f"data: {json.dumps(auth_event, ensure_ascii=False)}\n\n".encode("utf-8")
+                client_socket.sendall(payload)
         except OSError:
             try:
                 client_socket.close()
@@ -290,6 +299,14 @@ class HttpUI:
         while self._running:
             if self._client is None:
                 time.sleep(0.1)
+                continue
+
+            with self._sse_lock:
+                has_listeners = len(self._sse_clients) > 0
+
+            # Do not drop events if browser has not connected to SSE yet
+            if not has_listeners:
+                time.sleep(0.05)
                 continue
 
             try:
@@ -348,10 +365,24 @@ class HttpUI:
 
             if self._client is not None:
                 self._client.connect(username, password)
-                resp: dict = {
-                    "status": "connecting",
-                    "message": f"Connecting as {username}...",
-                }
+                # Wait up to 2.5 seconds for UDP handshake and auth verification
+                start_t = time.monotonic()
+                while time.monotonic() - start_t < 2.5:
+                    if self._client.is_authenticated:
+                        break
+                    time.sleep(0.05)
+
+                if self._client.is_authenticated:
+                    resp: dict = {
+                        "status": "ok",
+                        "username": username,
+                        "message": f"Successfully logged in as @{username}!",
+                    }
+                else:
+                    resp = {
+                        "status": "error",
+                        "message": "Authentication failed or server unreachable.",
+                    }
             else:
                 resp = {"status": "error", "message": "Client not ready"}
 

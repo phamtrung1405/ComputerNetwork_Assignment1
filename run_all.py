@@ -178,15 +178,13 @@ def main() -> None:
     print("=" * 65)
 
     # 2. Launch Server
-    print(f"\n[1/2] Starting Server on Web port {args.http_port} & UDP port {args.server_port}...")
+    print(f"\n[1/2] Starting Central UDP Server on port {args.server_port}...")
     server_cmd = [
         sys.executable,
         "-u",
         str(RUN_SERVER_SCRIPT),
         "--port",
         str(args.server_port),
-        "--web-port",
-        str(args.http_port),
     ]
     server_proc = subprocess.Popen(server_cmd, cwd=str(PROJECT_ROOT))
     child_processes.append(server_proc)
@@ -197,32 +195,39 @@ def main() -> None:
         print("[ERROR] Server startup failed!")
         sys.exit(1)
 
-    web_url = f"http://127.0.0.1:{args.http_port}"
+    # 3. Launch Distributed Clients (ADR-004)
+    print(f"\n[2/2] Starting {args.clients} Client instance(s)...")
+    for i in range(args.clients):
+        client_http_port = args.http_port + i
+        client_cmd = [
+            sys.executable,
+            "-u",
+            str(RUN_CLIENT_SCRIPT),
+            "--server-ip",
+            "127.0.0.1",
+            "--port",
+            str(args.server_port),
+            "--http-port",
+            str(client_http_port),
+        ]
+        if args.no_browser:
+            client_cmd.append("--no-browser")
+        c_proc = subprocess.Popen(client_cmd, cwd=str(PROJECT_ROOT))
+        child_processes.append(c_proc)
+        time.sleep(0.5)
 
-    # 3. Display setup guide
+    # 4. Display setup guide
     print("\n" + "=" * 65)
-    print("  SYSTEM READY ON PORT 8080!")
+    print("  DISTRIBUTED STREAMCHAT SYSTEM READY!")
     print("=" * 65)
-    print(f"  * Web UI & SSE Address:        {web_url}")
-    print(f"  * UDP Transport Port:          127.0.0.1:{args.server_port}")
-    print("  * Each browser tab acts as an independent client.")
-    print("  * You can open multiple tabs or access from LAN devices:")
+    print(f"  * Central UDP Server:          127.0.0.1:{args.server_port} (UDP)")
     for idx in range(min(args.clients, len(SAMPLE_ACCOUNTS))):
         acc = SAMPLE_ACCOUNTS[idx]
-        print(f"    - Tab {idx + 1}: Username: {acc[0]} | Password: {acc[1]} ({acc[2]})")
+        c_url = f"http://127.0.0.1:{args.http_port + idx}"
+        print(f"  * Client {idx + 1} ({acc[0]} - {acc[2]}): {c_url} -> Login: {acc[0]} / {acc[1]}")
     print("-" * 65)
-    print("  [TIP] Press Ctrl + C to safely shut down the system.")
+    print("  [TIP] Press Ctrl + C to safely shut down all Server & Client processes.")
     print("=" * 65 + "\n")
-
-    # 4. Open browser if not disabled
-    if not args.no_browser:
-        max_open = min(args.clients, 4)
-        print(f"[2/2] Opening {max_open} browser tab(s) to {web_url}...")
-        for i in range(max_open):
-            webbrowser.open(web_url)
-            time.sleep(0.4)
-        if args.clients > 4:
-            print(f"[NOTE] Only opening {max_open} initial tabs to avoid freezing the browser.")
 
     # 5. Monitor subprocesses
     try:

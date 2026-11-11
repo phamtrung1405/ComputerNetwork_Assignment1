@@ -58,7 +58,7 @@ HEADER_STRUCT_FMT: str = "!BIIBHIH2s"
 # Sizes & MTU
 # ──────────────────────────────────────────────────
 MAX_UDP_PAYLOAD: int = 1400     # bytes – safe threshold against IP fragmentation
-MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE  # 1378 bytes
+MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE - 16  # 1362 bytes (ADR-007: accounting for 22B Header + 16B AEAD GCM Tag)
 RECV_BUFFER_SIZE: int = 65535   # Maximum socket receive buffer size
 
 # ──────────────────────────────────────────────────

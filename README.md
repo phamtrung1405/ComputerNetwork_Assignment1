@@ -71,13 +71,21 @@ ComputerNetwork_BTL_1/
 - **Python**: Phiên bản `3.8` trở lên (đã kiểm thử tương thích với Python 3.10 - 3.14).
 - **Hệ điều hành**: Windows, Linux, macOS.
 
-Cài đặt các thư viện cần thiết bằng lệnh:
+### Khuyến nghị: Sử dụng môi trường ảo (.venv)
+Dự án đã tích hợp sẵn môi trường ảo tại thư mục `.venv`. Để tránh xung đột với các phiên bản Python toàn cục hoặc môi trường MSYS2/MinGW, hãy kích hoạt môi trường ảo:
 
-```bash
-pip install -r requirements.txt
-```
+- **Trên Windows (PowerShell):**
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+  *(Hoặc chạy trực tiếp bằng lệnh: `.\.venv\Scripts\python.exe <tên_script>.py`)*
 
-*(Yêu cầu thư viện: `cryptography>=41.0.0`)*
+- **Cài đặt thư viện phụ thuộc (nếu tạo môi trường mới):**
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+*(Yêu cầu thư viện cốt lõi: `cryptography>=41.0.0`)*
 
 ---
 
@@ -122,15 +130,26 @@ python run_server.py
 
 ---
 
-#### Bước 2: Truy cập Web UI & WebSocket trên cổng 8080 (Mở các Client)
+#### Bước 2: Khởi chạy Client & Mở Giao diện Web (Mở các Terminal riêng)
 
-Hệ thống hoạt động theo kiến trúc Client-Server chuẩn: chỉ cần **1 địa chỉ duy nhất** `http://127.0.0.1:8080` (hoặc IP máy chủ trong mạng LAN). Mỗi tab trình duyệt tạo một kết nối WebSocket độc lập, cho phép mở hàng trăm tài khoản khác nhau cùng lúc.
+Hệ thống hoạt động theo kiến trúc phân tán chuẩn (ADR-004): Mỗi Client chạy độc lập một tiến trình kết nối UDP tới Server:9000, đồng thời tự động dò cổng mở một Web UI cục bộ (8080 cho Alice, 8081 cho Bob...):
 
-- Mở tab trình duyệt 1: [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập tài khoản `alice` / `password123`.
-- Mở tab trình duyệt 2 (hoặc từ máy khác trong LAN): [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập tài khoản `bob` / `secret456`.
-- Mở tab trình duyệt 3: [http://127.0.0.1:8080](http://127.0.0.1:8080) -> Đăng nhập `charlie`, `demo`, hoặc `user1`..`user50`.
+- **Client 1 (Alice):**
+  Mở Terminal 2 và chạy:
+  ```bash
+  python run_client.py
+  ```
+  *(Tự động mở trình duyệt tại `http://127.0.0.1:8080` -> Đăng nhập `alice` / `password123`)*
 
-*(Hoặc dùng lệnh `python run_client.py` để tự động mở thêm tab trình duyệt).*
+- **Client 2 (Bob):**
+  Mở Terminal 3 và chạy:
+  ```bash
+  python run_client.py
+  ```
+  *(Tự động dò cổng trống tiếp theo `http://127.0.0.1:8081` -> Đăng nhập `bob` / `secret456`)*
+
+- **Client bổ sung (Charlie, demo...):**
+  Mở thêm Terminal và chạy `python run_client.py` để mở thêm client độc lập trên cổng 8082, 8083...
 
 ---
 
@@ -151,26 +170,35 @@ Hệ thống tích hợp sẵn các tài khoản thử nghiệm sau:
 
 ### 6.1. Đăng nhập
 - Tại Tab 1 `http://127.0.0.1:8080`: Nhập username `alice` và mật khẩu `password123` rồi bấm **Đăng nhập**.
-- Tại Tab 2 `http://127.0.0.1:8080`: Nhập username `bob` và mật khẩu `secret456` rồi bấm **Đăng nhập**.
-- Trình duyệt sẽ tự động kết nối WebSocket (`ws://127.0.0.1:8080/ws`), xác thực tức thời qua cơ sở dữ liệu SQLite và hiển thị trạng thái trực tuyến của các người dùng trên thanh sidebar.
+- Tại Tab 2 `http://127.0.0.1:8081`: Nhập username `bob` và mật khẩu `secret456` rồi bấm **Đăng nhập**.
+- Giao diện Web Client cục bộ tự động kết nối qua Raw Socket UDP tới Server (127.0.0.1:9000), xác thực tức thời qua cơ sở dữ liệu SQLite và hiển thị trạng thái trực tuyến của các người dùng trên thanh sidebar.
 
 ### 6.2. Chat phòng chung (Broadcast)
 - Nhập bất kỳ nội dung nào vào ô chat bên dưới và nhấn **Enter** hoặc bấm nút **Gửi**.
 - Toàn bộ các client đang trực tuyến sẽ nhận được tin nhắn tức thời kèm theo tên người gửi và thời gian gửi.
+- **Trải nghiệm người gửi:** Bản thân người gửi sẽ nhìn thấy ngay tin nhắn của mình xuất hiện bên phải (màu xanh gradient, nhãn `You`) đồng bộ tức thì.
 
 ### 6.3. Chat riêng tư (Unicast)
 - Nhắn tin riêng cho một người cụ thể bằng cú pháp tiền tố `@<username>`:
   ```text
   @bob Chào Bob, mình là Alice đây!
   ```
+  *Hoặc nhấp chuột trực tiếp vào tên người dùng trong danh sách **Online Users** ở sidebar để chuyển sang chế độ Private Chat.*
 - Tin nhắn này chỉ được gửi tới đúng tài khoản `bob`, các client khác sẽ không thấy nội dung này.
+- **Trải nghiệm người gửi:** Người gửi sẽ thấy tin nhắn riêng hiển thị bên phải với nhãn `You ➔ @bob [🔒 Private]`.
 
 ### 6.4. Gửi file (File Transfer)
-1. Bấm vào biểu tượng kẹp ghim `📎` ở góc trên bên phải khung chat.
-2. Hộp thoại gửi file mở ra:
-   - **Đường dẫn file**: Nhập đường dẫn tuyệt đối đến file trên máy (ví dụ: `C:\ComputerNetwork\Assignment1\ComputerNetwork_BTL_1\requirements.txt`).
-   - **Gửi đến**: Nhập `all` (gửi cho tất cả) hoặc nhập username cụ thể (ví dụ: `bob`).
-3. Bấm **Gửi** để bắt đầu truyền stream file qua UDP có đảm bảo tin cậy. Thanh tiến trình truyền file sẽ được hiển thị trên thanh công cụ bên trái.
+1. Bấm vào biểu tượng kẹp ghim `📎` ở góc trên bên phải khung chat để mở hộp thoại gửi file.
+2. Hỗ trợ 3 cách chọn file linh hoạt:
+   - **Kéo & Thả (Drag and Drop):** Kéo trực tiếp bất kỳ tệp tin nào từ máy tính vào vùng kéo thả.
+   - **Chọn file trực tiếp:** Bấm **Browse File** để chọn file từ File Explorer.
+   - **Đường dẫn thủ công:** Nhập đường dẫn file trên ổ đĩa.
+3. Chọn đối tượng nhận: `all` (gửi cho tất cả) hoặc username cụ thể (ví dụ: `bob`).
+4. Bấm **Send File** để bắt đầu truyền stream file qua UDP có đảm bảo tin cậy. Thanh tiến trình % upload sẽ hiển thị trực quan.
+5. **Trực quan hóa tin nhắn file:**
+   - **Người gửi:** Hiển thị ngay card file bên phải (màu xanh gradient) với thông tin tên file, dung lượng và nhãn `You sent a file:`.
+   - **Người nhận:** Nhận được card file bên trái kèm nút **📥 Download** để tải file về máy.
+   - Cả hai bên đều được ghi nhận tệp vào danh sách **Files** ở thanh sidebar bên trái.
 
 ---
 
@@ -284,7 +312,7 @@ Tệp thực thi script dạng Batch dành riêng cho môi trường Microsoft W
   - Cấu trúc format: `!BIIBHIHI` tương ứng: `msg_type` (1B), `conn_id` (4B), `seq_num` (4B), `flags` (1B), `stream_id` (2B), `offset` (4B), `payload_len` (2B), `reserved` (4B).
 - **Kích thước gói & MTU**:
   - `MAX_UDP_PAYLOAD = 1400` bytes (giới hạn an toàn chống phân mảnh IP).
-  - `MAX_APP_PAYLOAD = 1378` bytes (sau khi trừ 22 bytes header).
+  - `MAX_APP_PAYLOAD = 1362` bytes (sau khi trừ 22 bytes header và 16 bytes AEAD GCM tag theo ADR-007).
   - `RECV_BUFFER_SIZE = 65535` bytes.
 - **Thời gian & Timeout**:
   - `INITIAL_RTO = 1.0`s, `MIN_RTO = 0.2`s, `MAX_RTO = 10.0`s.
@@ -379,7 +407,7 @@ Hiện thực hóa việc phân mảnh dữ liệu (Framing) và sắp xếp tá
 
 - **Lớp `Stream`**:
   - **`__init__(stream_id: int, send_callback=None)`**: Khởi tạo luồng logic với con trỏ offset ghi dữ liệu `_write_offset`, bộ đệm chứa các chunk nhận `_recv_buffer`, offset mong đợi kế tiếp `_expected_offset` và offset kết thúc bản tin `_eom_offset`.
-  - **`write(data: bytes) -> int`**: Phân chia mảng byte lớn thành các chunk nhỏ có kích thước tối đa không vượt quá `MAX_APP_PAYLOAD` (1378 bytes), gán offset tăng dần tương ứng với vị trí trong luồng, gắn cờ `FLAG_EOM` cho chunk cuối cùng, và gọi `send_callback` để đẩy dữ liệu xuống tầng kết nối.
+  - **`write(data: bytes) -> int`**: Phân chia mảng byte lớn thành các chunk nhỏ có kích thước tối đa không vượt quá `SAFE_MAX_APP_PAYLOAD` (1362 bytes), gán offset tăng dần tương ứng với vị trí trong luồng, gắn cờ `FLAG_EOM` cho chunk cuối cùng, và gọi `send_callback` để đẩy dữ liệu xuống tầng kết nối.
   - **`read_incoming(offset: int, data: bytes, is_eom: bool) -> Optional[bytes]`**: Tiếp nhận chunk dữ liệu kèm vị trí `offset` và cất vào bộ đệm `_recv_buffer`. Nếu có cờ `is_eom`, ghi nhận tổng độ dài dự kiến của message. Sau đó kích hoạt hàm `_try_assemble()` để thử ghép nối dữ liệu.
   - **`_try_assemble() -> Optional[bytes]`**: Quét qua các mảnh dữ liệu trong `_recv_buffer` theo thứ tự `offset` tăng dần từ vị trí `_expected_offset`. Nếu dữ liệu liên tục không bị lỗ hổng (không khuyết gói tin nào) đến điểm kết thúc EOM, nối các chuỗi byte lại thành bản tin hoàn chỉnh, dọn dẹp bộ đệm và trả về; nếu còn thiếu mảnh dữ liệu nào, trả về `None` để chờ thêm.
   - **`get_complete_messages() -> list[bytes]`**: Lấy ra toàn bộ danh sách các bản tin đã được lắp ráp hoàn chỉnh và xóa sạch bộ đệm hàng đợi bản tin.
@@ -550,22 +578,21 @@ graph TD
 #### Chi tiết 5 giai đoạn trong vòng đời kết nối:
 
 1. **Giai đoạn Khởi tạo & Lắng nghe**:
-   - [run_server.py](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/run_server.py) mở đồng thời 2 dịch vụ:
-     - [ChatServer](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/server.py): Mở socket UDP non-blocking tại cổng `9000`, đăng ký với `selectors.DefaultSelector` để lắng nghe các datagram đến.
-     - [UnifiedChatServer](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/web_server.py) / [HttpUI](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py): Mở raw TCP socket tại cổng `8080`, phục vụ giao diện tĩnh và kênh SSE.
+   - [run_server.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/run_server.py) mở [ChatServer](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py): Mở socket UDP non-blocking tại cổng `9000`, đăng ký với `selectors.DefaultSelector` để lắng nghe các datagram đến.
+   - Mỗi Client ([run_client.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/run_client.py)) tự khởi chạy một tiến trình [HttpUI](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py) cục bộ tại cổng trống (8080 cho Alice, 8081 cho Bob...) để phục vụ giao diện Web và cầu nối IPC.
 2. **Giai đoạn Bắt tay Bảo mật (X25519 ECDH Handshake)**:
-   - Khi Client kết nối UDP đến Server, hàm [handle_handshake()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L324-L346) sinh cặp khóa X25519 và gửi gói tin `PKT_HELLO` (chứa `public_key` của Client).
+   - Khi Client kết nối UDP đến Server, hàm [handle_handshake()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L324-L346) sinh cặp khóa X25519 và gửi gói tin `PKT_HELLO` (chứa `public_key` của Client).
    - Server nhận `PKT_HELLO`, sinh cặp khóa X25519 của Server, dùng ECDH kết hợp HKDF-SHA256 để dẫn xuất khóa đối xứng `session_key` (AES-256), sau đó gửi lại gói `PKT_HELLO_ACK` chứa `public_key` của Server.
    - Client nhận `PKT_HELLO_ACK`, hoàn tất tính toán khóa `session_key` tương đương. Toàn bộ các gói tin dữ liệu về sau đều được mã hóa bằng **AES-256-GCM**.
 3. **Giai đoạn Đăng nhập & Xác thực Phiên (Authentication)**:
    - Client băm mật khẩu bằng SHA-256 và gửi bản tin `AUTH` qua Stream 0.
-   - [Session](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/session.py) tại Server đối chiếu tài khoản với cơ sở dữ liệu SQLite [users.db](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/users.db) qua [database.py](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/database.py). Nếu hợp lệ, gán `authenticated = True`, lưu ánh xạ `username -> conn_id`, và phát thông báo `SYSTEM` cho toàn phòng chat.
+   - [Session](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py) tại Server đối chiếu tài khoản với cơ sở dữ liệu SQLite [users.db](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/users.db) qua [database.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/database.py). Nếu hợp lệ, gán `authenticated = True`, lưu ánh xạ `username -> conn_id`, và phát thông báo `SYSTEM` cho toàn phòng chat.
 4. **Giai đoạn Truyền dữ liệu Tin cậy & Kiểm soát Tắc nghẽn**:
-   - Dữ liệu ứng dụng (tin nhắn, truyền file) được đưa vào [Stream](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/stream.py), phân chia thành các chunk tối đa 1378 bytes.
+   - Dữ liệu ứng dụng (tin nhắn, truyền file) được đưa vào [Stream](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py), phân chia thành các chunk tối đa 1362 bytes.
    - Mỗi gói tin gán số thứ tự tuần tự `seq_num`. Bên nhận gửi ngay gói xác nhận `PKT_ACK` chứa dải SACK `ranges: [[start, end]]`.
-   - [ReliabilityManager](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/reliability.py) tính mẫu độ trễ `sample_rtt`, cập nhật $SRTT, RTTVAR, RTO$ theo chuẩn **RFC 6298** và điều chỉnh kích thước cửa sổ tắc nghẽn $cwnd$ theo hàm bậc ba của thuật toán **CUBIC**. Nếu quá hạn RTO mà chưa có ACK, gói tin sẽ được tự động truyền lại.
+   - [ReliabilityManager](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/reliability.py) tính mẫu độ trễ `sample_rtt`, cập nhật $SRTT, RTTVAR, RTO$ theo chuẩn **RFC 6298** và điều chỉnh kích thước cửa sổ tắc nghẽn $cwnd$ theo hàm bậc ba của thuật toán **CUBIC**. Nếu quá hạn RTO mà chưa có ACK, gói tin sẽ được tự động truyền lại.
 5. **Giai đoạn Giữ kết nối (Keepalive) & Đóng kết nối**:
-   - Hàm [tick()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L443-L469) chạy tuần hoàn mỗi 50ms: gửi gói tin `PKT_HEARTBEAT` nếu sau 5 giây không có dữ liệu, và đánh dấu đóng kết nối nếu im lặng quá `IDLE_TIMEOUT = 30` giây.
+   - Hàm [tick()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L443-L469) chạy tuần hoàn mỗi 50ms: gửi gói tin `PKT_HEARTBEAT` nếu sau 5 giây không có dữ liệu, và đánh dấu đóng kết nối nếu im lặng quá `IDLE_TIMEOUT = 30` giây.
 
 ---
 
@@ -637,7 +664,7 @@ sequenceDiagram
 
 #### 🔹 Bước 1: Trình duyệt Alice xử lý sự kiện giao diện (`app.js`)
 1. Người dùng Alice nhập `@bob Chào Bob, mình là Alice đây!` vào ô `#msgInput` và nhấn phím `Enter`.
-2. Hàm [sendMessage()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js#L378-L415) trong [src/client/static/app.js](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js) được kích hoạt.
+2. Hàm [sendMessage()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js#L378-L415) trong [src/client/static/app.js](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js) được kích hoạt.
 3. Biểu thức chính quy `text.match(/^@(\S+)\s+(.+)$/)` phát hiện tiền tố `@bob`:
    - Trích xuất người nhận: `target = "bob"`.
    - Trích xuất nội dung thực tế: `actualText = "Chào Bob, mình là Alice đây!"`.
@@ -655,12 +682,12 @@ sequenceDiagram
      ```
 
 #### 🔹 Bước 2: Máy chủ Web cục bộ chuyển tiếp sang UDP Client (`http_ui.py` & `client.py`)
-1. Hàm [handle_http_request()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py#L111-L200) của [HttpUI](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py) đọc byte dữ liệu thô từ TCP socket, bóc tách header HTTP/1.1 và điều hướng tới [_handle_send()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py#L347-L375).
-2. [_handle_send()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py#L347-L375) phân tích JSON body và gọi:
+1. Hàm [handle_http_request()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py#L111-L200) của [HttpUI](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py) đọc byte dữ liệu thô từ TCP socket, bóc tách header HTTP/1.1 và điều hướng tới [_handle_send()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py#L347-L375).
+2. [_handle_send()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py#L347-L375) phân tích JSON body và gọi:
    ```python
    self._client.send_chat(target="bob", text="Chào Bob, mình là Alice đây!")
    ```
-3. Trong [src/client/client.py](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/client.py), hàm [send_chat()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/client.py#L120-L133) đóng gói message ứng dụng:
+3. Trong [src/client/client.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py), hàm [send_chat()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L120-L133) đóng gói message ứng dụng (JSON byte nhỏ hơn rất nhiều so với `SAFE_MAX_APP_PAYLOAD = 1362` bytes):
    ```json
    {
      "type": "MSG",
@@ -668,22 +695,22 @@ sequenceDiagram
      "text": "Chào Bob, mình là Alice đây!"
    }
    ```
-4. Hàm [_send_json()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/client.py#L296-L305) lấy đối tượng luồng Stream 0 qua `self._connection.get_or_create_stream(0)` và gọi `stream.write(data)`.
+4. Hàm [_send_json()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L296-L305) lấy đối tượng luồng Stream 0 qua `self._connection.get_or_create_stream(0)` và gọi `stream.write(data)`.
 
 #### 🔹 Bước 3: Phân mảnh Stream, Mã hóa AES-GCM và Đóng gói Header UDP (`stream.py`, `crypto.py`, `packet.py`, `connection.py`)
-1. **Phân mảnh luồng ([Stream.write()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/stream.py#L38-L62))**:
-   - Chuỗi JSON byte có độ dài khoảng 65 bytes, nhỏ hơn rất nhiều so với `MAX_APP_PAYLOAD = 1378` bytes.
+1. **Phân mảnh luồng ([Stream.write()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py#L38-L62))**:
+   - Chuỗi JSON byte có độ dài khoảng 65 bytes, nhỏ hơn rất nhiều so với `SAFE_MAX_APP_PAYLOAD = 1362` bytes.
    - Do đó, toàn bộ bản tin nằm trọn trong 1 chunk duy nhất với `offset = 0`.
    - Vì là chunk cuối cùng của bản tin, Stream kích hoạt cờ `FLAG_EOM` (`0x01`).
-   - Kích hoạt callback [_stream_send_callback()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L155-L167).
-2. **Cấp phát số thứ tự và Mã hóa ([Connection.send_packet()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L170-L210))**:
+   - Kích hoạt callback [_stream_send_callback()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L155-L167).
+2. **Cấp phát số thứ tự và Mã hóa ([Connection.send_packet()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L170-L210))**:
    - Cấp phát thread-safe số thứ tự gói tin mới: `seq = self._alloc_seq()` (ví dụ: `seq = 5`).
    - Nhận thấy kết nối đã có `_session_key` (được thương lượng thành công từ bước bắt tay ECDH X25519 với Server) và `packet_type == PKT_DATA`:
-     - Gọi hàm [encrypt(payload, session_key, seq)](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/common/crypto.py#L55-L77).
+     - Gọi hàm [encrypt(payload, session_key, seq)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/crypto.py#L55-L77).
      - Hàm chuyển đổi số `seq = 5` thành chuỗi 12-byte Big-Endian để làm **Nonce** duy nhất.
      - Sử dụng thuật toán **AES-256-GCM** mã hóa `payload` thành `ciphertext` kèm theo 16 bytes Authentication Tag nối ở đuôi.
      - Bật cờ `FLAG_ENCRYPTED` (`0x08`) $\to$ Tổng cờ `flags = FLAG_EOM | FLAG_ENCRYPTED = 0x09`.
-3. **Đóng gói nhị phân 22-byte Header ([packet.pack()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/common/packet.py#L42-L72))**:
+3. **Đóng gói nhị phân 22-byte Header ([packet.pack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/packet.py#L42-L72))**:
    - Sử dụng định dạng mạng Big-Endian `!BIIBHIHI`:
      - `msg_type = PKT_DATA (0x03)` (1 byte)
      - `conn_id = alice_conn_id` (4 bytes)
@@ -694,28 +721,28 @@ sequenceDiagram
      - `payload_len = len(ciphertext)` (2 bytes)
      - `reserved = 0` (4 bytes)
    - Ghép 22 bytes header với mảng `ciphertext` tạo thành gói tin datagram nhị phân hoàn chỉnh.
-4. **Ghi nhận độ tin cậy ([ReliabilityManager.mark_sent()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/reliability.py#L65-L77))**:
+4. **Ghi nhận độ tin cậy ([ReliabilityManager.mark_sent()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/reliability.py#L65-L77))**:
    - Lưu gói tin cùng mốc thời gian `monotonic()` vào từ điển `_unacked[5]` để tính RTO và truyền lại nếu xảy ra rớt mạng.
 5. **Gửi Socket UDP**:
    - Gọi `self.sock.sendto(raw, ('127.0.0.1', 9000))` để truyền gói tin ra tầng mạng UDP.
 
 #### 🔹 Bước 4: Máy chủ trung tâm tiếp nhận, Phản hồi ACK, Giải mã và Định tuyến (`server.py` & `session.py`)
-1. **Tiếp nhận gói tin ([ChatServer._read_datagrams()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/server.py#L102-L113))**:
+1. **Tiếp nhận gói tin ([ChatServer._read_datagrams()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py#L102-L113))**:
    - Vòng lặp `selectors` tại Server phát hiện socket UDP có dữ liệu đọc, gọi `recvfrom()`.
-   - Hàm [handle_datagram()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/server.py#L116-L146) gọi [packet.unpack()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/common/packet.py#L75-L103) bóc tách 22 bytes header, đọc được `conn_id` của Alice và chuyển gói tin cho `session_alice.connection.receive_packet(data)`.
-2. **Gửi phản hồi ACK tức thời ([Connection._handle_data()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L270-L301))**:
-   - Server gọi ngay [_send_ack(seq_num=5)](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L302-L321), tạo gói tin `PKT_ACK` mang payload JSON `{"ranges": [[5, 5]]}` gửi ngược lại ngay lập tức về IP:Port của Alice.
-   - Khi Alice nhận được gói này, hàm [process_sack()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/reliability.py#L79-L107) phía Alice sẽ:
+   - Hàm [handle_datagram()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py#L116-L146) gọi [packet.unpack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/packet.py#L75-L103) bóc tách 22 bytes header, đọc được `conn_id` của Alice và chuyển gói tin cho `session_alice.connection.receive_packet(data)`.
+2. **Gửi phản hồi ACK tức thời ([Connection._handle_data()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L270-L301))**:
+   - Server gọi ngay [_send_ack(seq_num=5)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L302-L321), tạo gói tin `PKT_ACK` mang payload JSON `{"ranges": [[5, 5]]}` gửi ngược lại ngay lập tức về IP:Port của Alice.
+   - Khi Alice nhận được gói này, hàm [process_sack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/reliability.py#L79-L107) phía Alice sẽ:
      - Xóa gói 5 khỏi danh sách chờ `_unacked`.
      - Tính mẫu RTT: `sample_rtt = time.monotonic() - sent_time`.
      - Cập nhật RTO theo chuẩn RFC 6298 và tăng kích thước cửa sổ tắc nghẽn CUBIC $cwnd$.
 3. **Giải mã dữ liệu**:
-   - Kiểm tra thấy cờ `FLAG_ENCRYPTED`, Server gọi [decrypt(payload, session_key_alice, seq_num=5)](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/common/crypto.py#L80-L104) để xác minh tính toàn vẹn (Authentication Tag) và giải mã thu lại dữ liệu gốc.
-4. **Tái lắp ghép luồng Stream ([Stream.read_incoming()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/stream.py#L64-L85))**:
-   - Đưa chunk vào bộ đệm Stream 0. Vì gói có `offset = 0` khớp với `_expected_offset = 0` và có cờ `is_eom = True`, hàm [_try_assemble()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/stream.py#L87-L113) hoàn tất ghép bản tin và trả về mảng bytes JSON.
-5. **Xử lý nghiệp vụ tại Session ([Session.process_payload()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/session.py#L60-L89))**:
+   - Kiểm tra thấy cờ `FLAG_ENCRYPTED`, Server gọi [decrypt(payload, session_key_alice, seq_num=5)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/crypto.py#L80-L104) để xác minh tính toàn vẹn (Authentication Tag) và giải mã thu lại dữ liệu gốc.
+4. **Tái lắp ghép luồng Stream ([Stream.read_incoming()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py#L64-L85))**:
+   - Đưa chunk vào bộ đệm Stream 0. Vì gói có `offset = 0` khớp với `_expected_offset = 0` và có cờ `is_eom = True`, hàm [_try_assemble()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py#L87-L113) hoàn tất ghép bản tin và trả về mảng bytes JSON.
+5. **Xử lý nghiệp vụ tại Session ([Session.process_payload()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py#L60-L89))**:
    - Server chuyển tiếp dữ liệu đến `session_alice.process_payload(complete_msg)`.
-   - Nhận diện `msg["type"] == "MSG"`, hàm [_process_msg()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/session.py#L141-L168) kiểm tra:
+   - Nhận diện `msg["type"] == "MSG"`, hàm [_process_msg()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py#L141-L168) kiểm tra:
      - `self.authenticated` là `True`.
      - `target = "bob"` (không phải `"all"`).
    - Đóng gói cấu trúc bản tin hoàn chỉnh:
@@ -727,8 +754,8 @@ sequenceDiagram
        "timestamp": 1729876543.21
      }
      ```
-   - Kích hoạt [route_unicast("bob", chat_msg)](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/session.py#L223-L241).
-6. **Định tuyến Unicast ([ChatServer._unicast()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/server/server.py#L218-L245))**:
+   - Kích hoạt [route_unicast("bob", chat_msg)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py#L223-L241).
+6. **Định tuyến Unicast ([ChatServer._unicast()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py#L218-L245))**:
    - Server tra cứu từ điển `self._user_to_conn.get("bob")` và tìm thấy mã `bob_conn_id`.
    - Lấy đối tượng `session_bob = self._sessions[bob_conn_id]`.
    - Nếu Bob không online: Server lập tức gửi một gói báo lỗi `{"type": "ERROR", "message": "Người dùng 'bob' không trực tuyến."}` trả về Stream 0 của Alice.
@@ -743,13 +770,13 @@ sequenceDiagram
    - Gửi datagram UDP qua socket tới địa chỉ `remote_addr` của Bob (IP và cổng mạng Bob đang lắng nghe).
 
 #### 🔹 Bước 6: Bob Client tiếp nhận gói UDP, Gửi ACK, Giải mã và đẩy vào Event Queue (`client.py`)
-1. Luồng chạy ngầm [poll_network()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/client.py#L236-L253) trên Client của Bob liên tục thực hiện `self._sock.recvfrom()`.
+1. Luồng chạy ngầm [poll_network()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L236-L253) trên Client của Bob liên tục thực hiện `self._sock.recvfrom()`.
 2. Khi nhận được datagram, hàm gọi `self._connection.receive_packet(data)`.
-3. Hàm [_handle_data()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/transport/connection.py#L270-L301) phía Bob:
+3. Hàm [_handle_data()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L270-L301) phía Bob:
    - Gửi gói tin `PKT_ACK` chứa `ranges: [[12, 12]]` ngược lại cho Server. (Server nhận được ACK này sẽ xóa gói 12 khỏi danh sách unacked của Bob).
    - Dùng `_session_key` của Bob và `seq_num = 12` để giải mã payload bằng AES-256-GCM.
    - Đẩy dữ liệu vào `Stream(0)` phía Bob để ráp nối chuỗi byte.
-   - Kích hoạt callback [ChatClient._on_app_message()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/client.py#L266-L293).
+   - Kích hoạt callback [ChatClient._on_app_message()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L266-L293).
 4. `_on_app_message()` phân giải JSON và đẩy bản tin vào hàng đợi sự kiện:
    ```python
    self.event_queue.put({
@@ -761,25 +788,25 @@ sequenceDiagram
    ```
 
 #### 🔹 Bước 7: Đẩy sự kiện qua Server-Sent Events (SSE) và Hiển thị trên màn hình Bob (`http_ui.py` & `app.js`)
-1. **Đẩy SSE ([HttpUI._sse_pump()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/http_ui.py#L280-L298))**:
+1. **Đẩy SSE ([HttpUI._sse_pump()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py#L280-L298))**:
    - Luồng nền `_sse_pump()` liên tục rút dữ liệu từ `client.event_queue`.
    - Nhận được đối tượng tin nhắn của Alice, hàm đóng gói thành định dạng chuẩn SSE:
      ```text
      data: {"type": "MSG", "from": "alice", "text": "Chào Bob, mình là Alice đây!", "timestamp": 1729876543.21}\n\n
      ```
    - Gửi chuỗi byte này qua kết nối TCP mở sẵn của trình duyệt Bob (`_broadcast_sse_raw()`).
-2. **Xử lý sự kiện tại trình duyệt Bob ([app.js](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js))**:
+2. **Xử lý sự kiện tại trình duyệt Bob ([app.js](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js))**:
    - Đối tượng JavaScript `eventSource.onmessage` trên tab trình duyệt của Bob bắt được sự kiện.
-   - Hàm [handleServerEvent()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js#L192-L220) kiểm tra `data.type === "MSG"`, gọi [handleChatMessage()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js#L332-L335).
-   - Hàm [addChatMessage()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js#L337-L366) tạo các phần tử DOM:
+   - Hàm [handleServerEvent()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js#L192-L220) kiểm tra `data.type === "MSG"`, gọi [handleChatMessage()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js#L332-L335).
+   - Hàm [addChatMessage()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js#L337-L366) tạo các phần tử DOM:
      - Thẻ `div.message.incoming.private-msg` với tiêu đề `@alice <span class="private-badge">🔒 Riêng tư</span>`.
      - Thẻ `div.message-bubble` hiển thị: `Chào Bob, mình là Alice đây!`.
      - Thẻ `div.message-time` hiển thị thời gian nhận.
-   - Chèn phần tử mới vào khung chat `#messages` và gọi [scrollToBottom()](file:///c:/261/ComputerNetwork/Assignment1/StreamChat_Assignment1/src/client/static/app.js#L82-L86) để tự động cuộn màn hình xuống tin nhắn mới nhất.
+   - Chèn phần tử mới vào khung chat `#messages` và gọi [scrollToBottom()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/static/app.js#L82-L86) để tự động cuộn màn hình xuống tin nhắn mới nhất.
 
 > [!NOTE]
-> **Trường hợp triển khai qua UnifiedChatServer (`src/server/web_server.py`) trên cổng 8080**:
-> Luồng xử lý tương tự về mặt logic nghiệp vụ: Trình duyệt Alice gửi `POST /api/send` qua HTTP/1.1 Raw TCP Socket; Server bóc tách body JSON, kiểm tra `target == "bob"`, tìm kiếm `SSEClient` có `username == "bob"` trong danh sách `_clients` và kích hoạt phương thức `client_bob.send_event(msg_event)` để đẩy trực tiếp qua kết nối SSE của Bob, đồng thời Server UDP cổng 9000 chạy song song để phục vụ các Client UDP độc lập.
+> **Kiến trúc phân tán chuẩn (ADR-004)**:
+> Hệ thống áp dụng triệt để kiến trúc phân tán: Server trung tâm (`run_server.py`) là máy chủ UDP non-blocking lắng nghe duy nhất tại cổng 9000, không mở cổng Web trực tiếp. Mỗi Client (`run_client.py`) khi khởi chạy sẽ tự động quản lý một máy chủ Web cục bộ (`http_ui.py`) trên cổng riêng (8080 cho Alice, 8081 cho Bob...) để phục vụ giao diện trình duyệt và tương tác thời gian thực qua Server-Sent Events (SSE). Mô hình này đảm bảo 100% tuân thủ yêu cầu không dùng WebSocket làm lõi mạng mà sử dụng giao thức truyền tải tin cậy tùy chỉnh trên nền UDP.
 
 ---
 

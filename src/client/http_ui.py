@@ -213,6 +213,7 @@ class HttpUI:
         self, client_socket: socket.socket, body_prefix: bytes, content_length: int
     ) -> str:
         """Read full UTF-8 text body content."""
+        
         body_bytes = bytearray(body_prefix)
         while len(body_bytes) < content_length:
             to_read = min(4096, content_length - len(body_bytes))
@@ -481,6 +482,7 @@ class HttpUI:
             text: str = data.get("text", "")
 
             if self._client is not None and self._client.is_authenticated:
+                print(f"HEHEHEHEH: {text}")
                 self._client.send_chat(target, text)
                 with self._history_lock:
                     self._message_history.append({

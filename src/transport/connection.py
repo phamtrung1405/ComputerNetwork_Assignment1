@@ -262,6 +262,12 @@ class Connection:
                 is_server=self.is_server,
             )
             raw: bytes = header_aad + ciphertext
+            print(  # [debug] encryption point
+                f"[debug] encrypt() called from Connection._transmit_data seq={seq} "
+                f"stream={stream_id} plain({len(payload)}B)={payload[:40]!r} "
+                f"-> cipher+tag({len(ciphertext)}B)={ciphertext[:16].hex()}...",
+                flush=True,
+            )
         else:
             raw = packet.pack(
                 msg_type=PKT_DATA,
@@ -272,6 +278,7 @@ class Connection:
                 offset=offset,
                 payload=payload,
             )
+        print(f"[PAYLOAD] {payload}")
 
         self.reliability.mark_sent(seq, raw)
         self._raw_send(raw)
@@ -283,6 +290,28 @@ class Connection:
             data: Bytes to send.
         """
         try:
+            from datetime import datetime, timedelta, timezone
+            import time
+            GREEN = "\033[92m"  # Màu xanh lá sáng (Light Green)
+            RESET = "\033[0m"
+            # 1. Lấy timestamp hiện tại ở dạng nano giây (int)
+            ns_timestamp = time.time_ns()
+
+            # 2. Định nghĩa múi giờ GMT+7
+            tz_gmt7 = timezone(timedelta(hours=7))
+
+            # 3. Chuyển đổi phần giây sang datetime để định dạng HH:MM:SS
+            dt = datetime.fromtimestamp(ns_timestamp // 1_000_000_000, tz=tz_gmt7)
+            base_time = dt.strftime("%H:%M:%S")
+
+            # 4. Trích xuất chính xác 9 chữ số phần nano giây
+            nano_part = f"{ns_timestamp % 1_000_000_000:09d}"
+
+            # 5. Kết hợp lại thành định dạng hoàn chỉnh như trong ảnh
+            gmt7_time = f"{base_time}.{nano_part}"
+
+            # Áp dụng vào câu lệnh debug của bạn
+            print(f"{GREEN}[DEBUG] {gmt7_time} {data.hex()}{RESET}")
             self.sock.sendto(data, self.remote_addr)
         except OSError as exc:
             logger.warning("Failed to send to %s: %s", self.remote_addr, exc)
@@ -412,10 +441,9 @@ class Connection:
                 logger.warning("Decryption failed for seq=%d: %s", header.seq_num, exc)
                 return
         else:
-            if encrypted:
-                logger.warning("Encrypted DATA seq=%d but no key yet", header.seq_num)
-                return
-            actual_payload = payload
+            # No session key yet: neither plaintext nor encrypted DATA is acceptable
+            logger.warning("Dropping DATA seq=%d: handshake not complete", header.seq_num)
+            return
 
         is_eom: bool = bool(header.flags & FLAG_EOM)
         stream = self.get_or_create_stream(header.stream_id)
@@ -486,6 +514,7 @@ class Connection:
         self._hello_sent_time = time.monotonic()
         self._hello_retries = 0
         self._raw_send(raw)
+        print(f"[debug] handshake 1/2: client sent HELLO -> {self.remote_addr} conn_id={self.conn_id}", flush=True)
         logger.info("Sent HELLO to %s (conn_id=%d)", self.remote_addr, self.conn_id)
 
     def _install_keys(self, peer_pub_bytes: bytes) -> None:
@@ -543,6 +572,7 @@ class Connection:
         self._hello_ack_raw = raw
         self._raw_send(raw)
         self.handshake_complete.set()
+        print(f"[debug] handshake 2/2: server got HELLO from {self.remote_addr}, sent HELLO_ACK, keys installed conn_id={self.conn_id}", flush=True)
         logger.info(
             "Handshake complete (server side) conn_id=%d", self.conn_id
         )
@@ -575,6 +605,7 @@ class Connection:
             logger.warning("Invalid HELLO_ACK public key: %s", exc)
             return
         self.handshake_complete.set()
+        print(f"[debug] handshake 2/2: client got HELLO_ACK from {self.remote_addr}, keys installed conn_id={self.conn_id}", flush=True)
         logger.info(
             "Handshake complete (client side) conn_id=%d", self.conn_id
         )

@@ -112,7 +112,8 @@ class ChatClient:
 
         # Wait for handshake completion (up to 5 seconds)
         if not self._connection.handshake_complete.wait(timeout=5.0):
-            logger.warning("Handshake timeout – sending auth unencrypted")
+            logger.error("Handshake timeout – not sending AUTH (no session key)")
+            return False
 
         # Send AUTH
         password_hash: str = hashlib.sha256(password.encode("utf-8")).hexdigest()
@@ -459,6 +460,11 @@ class ChatClient:
         Args:
             msg: Dict payload to send.
         """
+        # Encryption happens in Connection._transmit_data only once the session key
+        # exists; refuse to send application data in plaintext before that.
+        if not self._connection.handshake_complete.is_set():
+            logger.error("Refusing to send %s: handshake not complete", msg.get("type"))
+            return
         stream = self._connection.get_or_create_stream(0)
         data: bytes = json.dumps(msg, ensure_ascii=False).encode("utf-8")
         stream.write(data)

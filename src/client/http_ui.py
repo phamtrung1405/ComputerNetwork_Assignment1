@@ -62,6 +62,8 @@ class HttpUI:
         self._running: bool = False
         self._sse_clients: list[socket.socket] = []
         self._sse_lock: threading.Lock = threading.Lock()
+        self._message_history: list[dict] = []
+        self._history_lock: threading.Lock = threading.Lock()
 
     def set_client(self, client: ChatClient) -> None:
         """Assign ChatClient after initialization.
@@ -171,6 +173,10 @@ class HttpUI:
                 self._serve_static(client_socket, filename)
             elif method == "GET" and path == "/api/status":
                 self._handle_status(client_socket)
+            elif method == "GET" and path == "/api/history":
+                self._handle_history(client_socket)
+            elif method == "GET" and path == "/api/download":
+                self._handle_download(client_socket, query_params)
             elif method == "GET" and path == "/api/progress":
                 self._handle_progress(client_socket)
             elif method == "POST" and path == "/api/login":
@@ -241,11 +247,17 @@ class HttpUI:
 
     def _handle_logout(self, client_socket: socket.socket) -> None:
         """Log out the attached UDP client and return an HTTP status response."""
+        extra_headers = {
+            "Set-Cookie": "streamchat_user=; Path=/; Max-Age=0; SameSite=Lax",
+        }
+        with self._history_lock:
+            self._message_history.clear()
         if self._client is None:
             self._send_json_response(
                 client_socket,
                 503,
                 {"status": "error", "message": "Client not ready"},
+                extra_headers=extra_headers,
             )
         else:
             self._client.logout()
@@ -253,6 +265,7 @@ class HttpUI:
                 client_socket,
                 200,
                 {"status": "ok", "message": "Logged out"},
+                extra_headers=extra_headers,
             )
         client_socket.close()
 
@@ -311,6 +324,15 @@ class HttpUI:
 
             try:
                 event: dict = self._client.event_queue.get(timeout=0.5)
+                ev_type = event.get("type")
+                if ev_type in ("MSG", "SYSTEM", "FILE_READY", "FILE_COMPLETE"):
+                    with self._history_lock:
+                        self._message_history.append(event)
+                        if len(self._message_history) > 500:
+                            self._message_history.pop(0)
+                elif ev_type == "KICKED":
+                    with self._history_lock:
+                        self._message_history.clear()
                 self._broadcast_sse(event)
             except queue.Empty:
                 # Send periodic heartbeat comment to keep connection alive
@@ -378,15 +400,19 @@ class HttpUI:
                         "username": username,
                         "message": f"Successfully logged in as @{username}!",
                     }
+                    extra_headers = {
+                        "Set-Cookie": f"streamchat_user={username}; Path=/; Max-Age=86400; SameSite=Lax",
+                    }
+                    self._send_json_response(client_socket, 200, resp, extra_headers=extra_headers)
                 else:
                     resp = {
                         "status": "error",
                         "message": "Authentication failed or server unreachable.",
                     }
+                    self._send_json_response(client_socket, 200, resp)
             else:
                 resp = {"status": "error", "message": "Client not ready"}
-
-            self._send_json_response(client_socket, 200, resp)
+                self._send_json_response(client_socket, 200, resp)
         except json.JSONDecodeError:
             self._send_json_response(
                 client_socket, 400, {"status": "error", "message": "Invalid JSON"}
@@ -409,6 +435,17 @@ class HttpUI:
 
             if self._client is not None and self._client.is_authenticated:
                 self._client.send_chat(target, text)
+                with self._history_lock:
+                    self._message_history.append({
+                        "type": "MSG",
+                        "from": self._client.username,
+                        "target": target,
+                        "text": text,
+                        "timestamp": time.time(),
+                        "is_private": target != "all",
+                    })
+                    if len(self._message_history) > 500:
+                        self._message_history.pop(0)
                 self._send_json_response(
                     client_socket, 200, {"status": "ok", "message": "Sent"}
                 )
@@ -521,6 +558,19 @@ class HttpUI:
 
             stream_id = self._client.start_file_transfer(saved_path, target)
             if stream_id is not None:
+                dl_url = f"/api/download?stream_id={stream_id}&filename={safe_filename}"
+                with self._history_lock:
+                    self._message_history.append({
+                        "type": "FILE_READY",
+                        "from": self._client.username,
+                        "filename": safe_filename,
+                        "size": content_length,
+                        "target": target,
+                        "stream_id": stream_id,
+                        "download_url": dl_url,
+                        "timestamp": time.time(),
+                        "completed": True,
+                    })
                 self._send_json_response(
                     client_socket,
                     200,
@@ -528,6 +578,7 @@ class HttpUI:
                         "status": "ok",
                         "stream_id": stream_id,
                         "filename": safe_filename,
+                        "download_url": dl_url,
                         "message": "File transfer started",
                     },
                 )
@@ -562,6 +613,57 @@ class HttpUI:
         self._send_json_response(client_socket, 200, status)
         client_socket.close()
 
+    def _handle_history(self, client_socket: socket.socket) -> None:
+        """Handle GET /api/history to restore chat messages on reload."""
+        with self._history_lock:
+            msgs = list(self._message_history)
+        resp = {
+            "status": "ok",
+            "authenticated": self._client.is_authenticated if self._client else False,
+            "username": self._client.username if self._client else None,
+            "messages": msgs,
+        }
+        self._send_json_response(client_socket, 200, resp)
+        client_socket.close()
+
+    def _handle_download(self, client_socket: socket.socket, query_params: dict) -> None:
+        """Handle GET /api/download?stream_id=...&filename=..."""
+        stream_id_raw = query_params.get("stream_id", [""])[0]
+        filename_raw = query_params.get("filename", [""])[0]
+
+        file_tuple = None
+        if stream_id_raw.isdigit() and self._client is not None:
+            file_tuple = self._client.get_download_file(int(stream_id_raw))
+
+        if not file_tuple:
+            self._send_response(
+                client_socket, 404, "text/plain", b"File not found or transfer incomplete."
+            )
+            client_socket.close()
+            return
+
+        filename, file_path = file_tuple
+        if not file_path or not os.path.isfile(file_path):
+            self._send_response(
+                client_socket, 404, "text/plain", b"File not found on disk."
+            )
+            client_socket.close()
+            return
+
+        content_type, _ = mimetypes.guess_type(file_path)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        safe_dl_name = filename or filename_raw or os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            content = f.read()
+
+        extra_headers = {
+            "Content-Disposition": f'attachment; filename="{safe_dl_name}"',
+        }
+        self._send_response(client_socket, 200, content_type, content, extra_headers=extra_headers)
+        client_socket.close()
+
     def _handle_progress(self, client_socket: socket.socket) -> None:
         """Handle GET /api/progress.
 
@@ -582,6 +684,7 @@ class HttpUI:
         status_code: int,
         content_type: str,
         body: bytes,
+        extra_headers: Optional[dict[str, str]] = None,
     ) -> None:
         """Send raw HTTP response.
 
@@ -590,20 +693,24 @@ class HttpUI:
             status_code: HTTP status code.
             content_type: MIME type.
             body: Response payload bytes.
+            extra_headers: Optional custom HTTP response headers.
         """
         status_text: str = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found"}.get(
             status_code, "Unknown"
         )
-        header: str = (
-            f"HTTP/1.1 {status_code} {status_text}\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Content-Type, X-Filename, X-Target\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        )
+        header_lines = [
+            f"HTTP/1.1 {status_code} {status_text}",
+            f"Content-Type: {content_type}",
+            f"Content-Length: {len(body)}",
+            "Access-Control-Allow-Origin: *",
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers: Content-Type, X-Filename, X-Target",
+            "Connection: close",
+        ]
+        if extra_headers:
+            for k, v in extra_headers.items():
+                header_lines.append(f"{k}: {v}")
+        header = "\r\n".join(header_lines) + "\r\n\r\n"
         try:
             client_socket.sendall(header.encode("utf-8") + body)
         except OSError as exc:
@@ -614,6 +721,7 @@ class HttpUI:
         client_socket: socket.socket,
         status_code: int,
         data: dict,
+        extra_headers: Optional[dict[str, str]] = None,
     ) -> None:
         """Send JSON response.
 
@@ -621,9 +729,10 @@ class HttpUI:
             client_socket: Client socket.
             status_code: HTTP status code.
             data: Data dict.
+            extra_headers: Optional custom HTTP headers.
         """
         body: bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self._send_response(client_socket, status_code, "application/json", body)
+        self._send_response(client_socket, status_code, "application/json", body, extra_headers=extra_headers)
 
     # ----------------------- Shutdown -----------------------
 

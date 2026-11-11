@@ -342,6 +342,10 @@ class ChatServer:
                     old_session.send_kicked("Your account logged in from another location.")
                     old_session.authenticated = False
                     old_session.username = None
+                    try:
+                        old_session.connection.tick()
+                    except Exception:
+                        pass
                     old_session.connection.closed = True
 
             self._user_to_conn[username] = conn_id

@@ -45,10 +45,11 @@ __pycache__/
 
 # File PDF xuất bản 
 # (Bỏ dấu # ở dòng dưới nếu bạn KHÔNG muốn đẩy file PDF lên Git)
-# *.pdf
+*.pdf
 
 # Upload file
 uploads/
 
 agent_fixes/
 evaluation_output/
+tests/

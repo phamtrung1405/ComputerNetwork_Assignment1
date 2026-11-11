@@ -224,6 +224,7 @@ function handleKicked(data) {
         eventSource.close();
         eventSource = null;
     }
+    document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     isConnected = false;
     currentUsername = "";
     activeTarget = "all";
@@ -231,7 +232,7 @@ function handleKicked(data) {
     chatScreen.classList.remove("active");
     loginScreen.classList.add("active");
 
-    showLoginError(data.message || "Your account has logged in from another device or tab.");
+    showLoginError(data.message || "Tài khoản của bạn đã được đăng nhập từ một cổng/thiết bị khác (đã tự động đăng xuất).");
 
     messagesDiv.innerHTML = `
         <div class="system-message">
@@ -244,6 +245,7 @@ function handleKicked(data) {
 
 function handleAuthSuccess(data) {
     currentUsername = (data.username || currentUsername).trim().toLowerCase();
+    document.cookie = `streamchat_user=${encodeURIComponent(currentUsername)}; path=/; max-age=86400; SameSite=Lax`;
     displayUsername.textContent = currentUsername;
     userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
 
@@ -443,22 +445,20 @@ function handleFileReady(data) {
     const isTarget = data.target === "all" || (data.target || "").toLowerCase() === myUser || isOutgoing;
     if (!isTarget) return;
 
-    // If outgoing, check if already added locally
-    if (isOutgoing) {
-        const existing = (data.stream_id && document.querySelector(`.message.outgoing[data-stream-id="${data.stream_id}"]`)) ||
-                         document.querySelector(`.message.outgoing[data-filename="${encodeURIComponent(data.filename)}"]`);
-        if (existing) {
-            if (data.download_url) {
-                const dlBtn = existing.querySelector(".btn-download-file");
-                if (dlBtn && dlBtn.classList.contains("disabled")) {
-                    dlBtn.href = data.download_url;
-                    dlBtn.classList.remove("disabled");
-                    dlBtn.removeAttribute("style");
-                }
+    // Check if file card already exists to avoid duplicate entries and update download URL
+    const existing = (data.stream_id && document.querySelector(`.message[data-stream-id="${data.stream_id}"]`)) ||
+                     document.querySelector(`.message[data-filename="${encodeURIComponent(data.filename)}"]`);
+    if (existing) {
+        if (data.download_url) {
+            const dlBtn = existing.querySelector(".btn-download-file");
+            if (dlBtn) {
+                dlBtn.href = data.download_url;
+                dlBtn.classList.remove("disabled");
+                dlBtn.removeAttribute("style");
             }
-            addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
-            return;
         }
+        addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
+        return;
     }
 
     // 1. Add file card to chat window
@@ -708,6 +708,7 @@ btnDisconnect.addEventListener("click", () => {
     if (currentUsername) {
         fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
     }
+    document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     if (eventSource) {
         eventSource.close();
         eventSource = null;
@@ -754,5 +755,79 @@ if (btnThemeToggle) {
 }
 if (loginThemeToggle) {
     loginThemeToggle.addEventListener("click", toggleTheme);
+}
+
+// ═══════════════════════════════════════════════
+// SESSION COOKIE & MESSAGE RESTORATION ON RELOAD
+// ═══════════════════════════════════════════════
+
+function getCookie(name) {
+    const match = document.cookie.match(new RegExp("(^|;\\s*)" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[2]) : null;
+}
+
+async function checkAndRestoreSession() {
+    try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const status = await res.json();
+        if (status.authenticated && status.username) {
+            const uname = status.username.trim().toLowerCase();
+            currentUsername = uname;
+            handleAuthSuccess({
+                username: uname,
+                message: `Chào mừng trở lại @${uname}!`,
+            });
+            initSSE(uname);
+            await restoreMessageHistory();
+        } else {
+            const savedCookie = getCookie("streamchat_user");
+            if (savedCookie) {
+                document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
+            }
+        }
+    } catch (err) {
+        console.warn("Session restore check error:", err);
+    }
+}
+
+async function restoreMessageHistory() {
+    try {
+        const res = await fetch("/api/history");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
+            messagesDiv.innerHTML = `
+                <div class="system-message">
+                    <span>Welcome to StreamChat! You are in the general chat room.</span>
+                </div>
+            `;
+            for (const m of data.messages) {
+                const mtype = m.type;
+                if (mtype === "MSG") {
+                    const isOut = (m.from || "").toLowerCase() === currentUsername;
+                    addChatMessage(m.from, m.text, m.timestamp, isOut, m.is_private, m.target);
+                } else if (mtype === "SYSTEM") {
+                    addSystemMessage(m.message);
+                } else if (mtype === "FILE_READY") {
+                    const isOut = (m.from || "").toLowerCase() === currentUsername;
+                    addFileMessage(m.from, m.filename, m.size, m.download_url, isOut, m.target, m.stream_id);
+                    if (m.stream_id) {
+                        addFileTransferSidebar(m.stream_id, m.filename, m.size, m.download_url);
+                    }
+                }
+            }
+            scrollToBottom();
+        }
+    } catch (err) {
+        console.warn("Restore history error:", err);
+    }
+}
+
+// Automatically check session on page load / reload
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", checkAndRestoreSession);
+} else {
+    checkAndRestoreSession();
 }
 

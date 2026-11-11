@@ -11,11 +11,13 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import socket
+import tempfile
 import threading
 import time
-import queue
 from typing import Optional
+from urllib.parse import quote
 
 from common.constants import (
     DEFAULT_SERVER_HOST,
@@ -74,6 +76,10 @@ class ChatClient:
 
         # Track file transfers
         self._file_transfers: dict[int, dict] = {}
+        # Track incoming file downloads
+        self._incoming_files: dict[int, dict] = {}
+        self._download_dir: str = os.path.join(tempfile.gettempdir(), "streamchat_downloads")
+        os.makedirs(self._download_dir, exist_ok=True)
 
     # ----------------------- Connection -----------------------
 
@@ -188,6 +194,19 @@ class ChatClient:
             "size": file_size,
             "sent": 0,
             "status": "transferring",
+            "file_path": file_path,
+        }
+        self._incoming_files[stream_id] = {
+            "filename": filename,
+            "size": file_size,
+            "sha256": file_hash,
+            "from": self._username,
+            "target": target,
+            "received": file_size,
+            "chunks": [],
+            "file_path": file_path,
+            "status": "completed",
+            "download_url": f"/api/download?stream_id={stream_id}&filename={quote(filename)}",
         }
 
         return stream_id
@@ -270,6 +289,11 @@ class ChatClient:
             stream_id: Stream ID.
             data: Message data bytes.
         """
+        # If this is a chunk on an active file stream, assemble it
+        if stream_id != 0 and stream_id in self._incoming_files:
+            self._handle_incoming_file_chunk(stream_id, data)
+            return
+
         try:
             msg: dict = json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -294,8 +318,132 @@ class ChatClient:
         elif msg.get("type") == "KICKED":
             self._authenticated = False
             self._username = None
+            self._running = False
+            if self._connection:
+                self._connection.closed = True
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            # Recreate clean socket & connection so future logins work cleanly
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._sock.setblocking(False)
+            self._sock.bind(("0.0.0.0", 0))
+            self._connection = Connection(
+                sock=self._sock,
+                remote_addr=self._server_addr,
+                is_server=False,
+                on_app_message=self._on_app_message,
+            )
+        elif msg.get("type") in ("FILE", "FILE_READY"):
+            sid = msg.get("stream_id")
+            fname = msg.get("filename", "")
+            fsize = msg.get("size", 0)
+            fhash = msg.get("sha256", "")
+            from_user = msg.get("from", "")
+            target = msg.get("target", "all")
+            dl_url = f"/api/download?stream_id={sid}&filename={quote(fname)}"
+            msg["download_url"] = dl_url
+
+            if sid is not None and sid not in self._incoming_files:
+                self._incoming_files[sid] = {
+                    "filename": fname,
+                    "size": fsize,
+                    "sha256": fhash,
+                    "from": from_user,
+                    "target": target,
+                    "received": 0,
+                    "chunks": [],
+                    "file_path": None,
+                    "status": "receiving",
+                    "download_url": dl_url,
+                }
+                # Handle 0-byte file immediately
+                if fsize == 0:
+                    safe_name = os.path.basename(fname) or "empty_file"
+                    saved_path = os.path.join(self._download_dir, f"{sid}_{safe_name}")
+                    with open(saved_path, "wb") as f:
+                        pass
+                    self._incoming_files[sid]["file_path"] = saved_path
+                    self._incoming_files[sid]["status"] = "completed"
+                    msg["completed"] = True
 
         self.event_queue.put(msg)
+
+    def _handle_incoming_file_chunk(self, stream_id: int, data: bytes) -> None:
+        """Accumulate incoming raw file stream chunks and save to disk upon completion."""
+        file_info = self._incoming_files.get(stream_id)
+        if not file_info:
+            return
+
+        file_info["chunks"].append(data)
+        file_info["received"] += len(data)
+
+        # Notify progress if size is known
+        if file_info["size"] > 0:
+            progress_pct = int(min(100, (file_info["received"] / file_info["size"]) * 100))
+            self.event_queue.put({
+                "type": "FILE_PROGRESS",
+                "stream_id": stream_id,
+                "filename": file_info["filename"],
+                "size": file_info["size"],
+                "received": file_info["received"],
+                "progress": progress_pct,
+            })
+
+        if file_info["received"] >= file_info["size"]:
+            complete_bytes = b"".join(file_info["chunks"])
+            file_info["chunks"].clear()
+
+            calc_hash = hashlib.sha256(complete_bytes).hexdigest().lower()
+            expected_hash = file_info.get("sha256", "").lower()
+            if expected_hash and calc_hash != expected_hash:
+                logger.error("Corrupted file on stream %d: hash mismatch", stream_id)
+                file_info["status"] = "corrupted"
+                self.event_queue.put({
+                    "type": "FILE_ERROR",
+                    "stream_id": stream_id,
+                    "filename": file_info["filename"],
+                    "message": "File integrity verification failed.",
+                })
+                return
+
+            safe_name = os.path.basename(file_info["filename"]) or "downloaded_file"
+            saved_path = os.path.join(self._download_dir, f"{stream_id}_{safe_name}")
+            with open(saved_path, "wb") as f:
+                f.write(complete_bytes)
+
+            file_info["file_path"] = saved_path
+            file_info["status"] = "completed"
+            logger.info("File successfully received and saved: %s (%d bytes)", saved_path, len(complete_bytes))
+
+            dl_url = f"/api/download?stream_id={stream_id}&filename={quote(safe_name)}"
+            file_info["download_url"] = dl_url
+
+            self.event_queue.put({
+                "type": "FILE_READY",
+                "stream_id": stream_id,
+                "filename": file_info["filename"],
+                "size": file_info["size"],
+                "from": file_info.get("from", ""),
+                "target": file_info.get("target", "all"),
+                "download_url": dl_url,
+                "completed": True,
+            })
+
+    def get_download_file(self, stream_id: int) -> Optional[tuple[str, str]]:
+        """Retrieve (filename, file_path) for an assembled or sent file."""
+        if stream_id in self._incoming_files:
+            info = self._incoming_files[stream_id]
+            fpath = info.get("file_path")
+            if fpath and os.path.isfile(fpath):
+                return (info.get("filename", os.path.basename(fpath)), fpath)
+        if stream_id in self._file_transfers:
+            info = self._file_transfers[stream_id]
+            fpath = info.get("file_path")
+            if fpath and os.path.isfile(fpath):
+                return (info.get("filename", os.path.basename(fpath)), fpath)
+        return None
 
     # ----------------------- Utilities -----------------------
 

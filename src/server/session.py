@@ -347,6 +347,9 @@ class Session:
             self._reject_payload("Download URL must be a string within the size limit.")
             return
 
+        if not download_url and stream_id:
+            download_url = f"/api/download?stream_id={stream_id}&filename={filename.strip()}"
+
         file_info: dict = {
             "type": "FILE_READY",
             "from": self.username,

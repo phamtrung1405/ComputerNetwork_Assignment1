@@ -4,10 +4,9 @@ tests/test_connection_loopback.py
 Kiểm thử tích hợp Connection (M1) <-> crypto / reliability / stream (M2) qua socket giả
 (không dùng UDP thật). Hợp đồng: docs/project/M1_M2_INTEGRATION_CONTRACT.md (K1-K11).
 
-Trạng thái "đã bind":
-- ``Connection.INTEGRATION_CONTRACT_VERSION >= 1`` do patch ``docs/handoff/M1/connection.patch`` thêm vào.
-- Chưa bind: các test hợp đồng được đánh dấu ``expectedFailure`` (mô tả lỗi audit C-1..H-6 còn tồn tại),
-  còn ma trận truyền file SHA-256 bị ``skip``. Khi M1 áp patch, tất cả phải pass.
+Trạng thái hợp đồng:
+- ``Connection.INTEGRATION_CONTRACT_VERSION >= 1`` bật các kiểm tra K1-K11.
+- Trên phiên bản cũ chưa bind, một số kiểm tra được đánh dấu ``expectedFailure`` và bài truyền file lớn bị ``skip``.
 
 Biến môi trường:
 - ``STREAMCHAT_SRC_DIR``: trỏ tới thư mục ``src`` khác (ví dụ bản đã vá) để kiểm thử.

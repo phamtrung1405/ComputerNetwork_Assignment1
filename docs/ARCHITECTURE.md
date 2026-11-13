@@ -1,6 +1,6 @@
 # STREAMCHAT Architecture
 
-Status: derived from the code at branch `feat/Jaden` (commit `d869b8c`). Section 6 is a **target design, not implemented**. Nothing here is `VERIFIED`; tests were not re-run for this document.
+Status: reconciled with the repository code on 2026-11-13. The implemented transport behavior is covered by unit and Connection loopback tests; the multi-client browser-to-server full stack has not been verified. Section 6 remains a **target design, not implemented**.
 
 Sequence diagrams live in [`sequence_diagram.md`](sequence_diagram.md).
 
@@ -108,13 +108,14 @@ flowchart TB
 | Plaintext DATA after handshake        | Dropped                                                                                     |
 | NAT rebinding                         | Requires valid AEAD DATA                                                                    |
 | Input validation                      | `Session`: username/hash format, filename, size, stream id, chunk length, declared-size cap |
+| File integrity                        | Receiver verifies SHA-256 before saving; mismatches are reported as `FILE_ERROR`             |
 
 Known gaps (these motivate section 6):
 
 - `HELLO`/`HELLO_ACK` are unauthenticated: a man-in-the-middle can substitute public keys. The client has no way to verify it is talking to the real server.
 - `PKT_ACK`, `HEARTBEAT*`, `CLOSE` carry no authentication. An off-path attacker who knows a `conn_id` can send a forged `CLOSE` (the server sets `closed = True` on it without authentication, `server.py:212`) or forged ACKs.
-- `client.py:106-107`: if the handshake times out, the client logs "sending auth unencrypted" and sends `AUTH` anyway. That is a downgrade to cleartext credentials.
-- Password handling: client sends an unsalted `SHA-256(password)`. Anyone who captures it can log in (it is the password equivalent), and the server compares it directly.
+- `ChatClient.connect()`: a handshake timeout aborts login without sending `AUTH`; the HTTP UI reports the timeout.
+- Password handling: the client sends `SHA-256(password)` as the authentication token. The server applies per-account salted PBKDF2-HMAC-SHA256, but a captured token remains replayable; transport protection is still required.
 - Anyone can create a `Session` by sending any datagram with a fresh `conn_id` (no cookie or proof of address ownership), so session creation is spoofable and amplifies memory use.
 - Keys are never rotated; the nonce space is per-session only.
 - No replay window on `seq_num` beyond the nonce guard.
@@ -136,16 +137,14 @@ Goal: both ends apply every security feature. Labelled `PROPOSED`; none of it ha
 | T8  | Rekey before nonce or byte limits (new ephemeral DH inside the encrypted channel)                                                                                                        | `crypto.py`, `connection.py`              | Long-lived key exposure                 |
 | T9  | Rate limits per address and per `conn_id` (handshakes, auth attempts, bytes)                                                                                                             | `server.py`, `session.py`                 | Brute force, DoS                        |
 | T10 | Local UI hardening: bind `127.0.0.1`, per-launch random token required on `/api/*`, Origin check                                                                                         | `http_ui.py`                              | Other local pages driving the client    |
-| T11 | End-to-end file integrity check by receiver, rejection on SHA-256 mismatch surfaced to UI                                                                                                | `client.py`, `http_ui.py`                 | Corrupt or tampered file                |
 
 How the full-security flow looks end to end: see section 2 of `sequence_diagram.md`.
 
-## 7. Spec/code mismatches found while writing this
+## 7. Current protocol and verification notes
 
-Recorded per `protocol-correctness.md`; not resolved here.
-
-- `common/constants.py` has `MAX_APP_PAYLOAD = MAX_UDP_PAYLOAD - HEADER_SIZE = 1378`, while `CLAUDE.md` and the protocol rules say 1362 (1400 - 22 - 16 tag). Which value `stream.py` enforces was not checked for this document.
-- `constants.py` defines both `HEADER_FORMAT = "!BIBHIHHI"` and `HEADER_STRUCT_FMT = "!BIIBHIH2s"`, while `CLAUDE.md` states `!BIIBHIHI`. The authoritative one is whatever `packet.py` uses; not verified here.
-- `PKT_AUTH_REQ` and `PKT_AUTH_RESP` exist in constants but auth is carried as JSON `AUTH` / `AUTH_RESP` in DATA.
-- `src/server/web_server.py` (monolithic HTTP/SSE, ADR-003 REJECTED) still exists and bypasses the UDP stack; it is not part of the architecture above.
-- `client.py` file transfer reads 4096-byte pieces and calls `stream.write`; chunking to MTU is `stream.py`'s job.
+- `HEADER_FORMAT` and `HEADER_STRUCT_FMT` now share `!BIIBHIHI`, the 22-byte format used by `packet.py`.
+- `PROTOCOL_MAGIC` is a reserved constant only; it is not sent or checked on the wire.
+- `PKT_AUTH_REQ` and `PKT_AUTH_RESP` exist in constants but authentication is carried as JSON `AUTH` / `AUTH_RESP` in DATA.
+- `src/server/web_server.py` is a legacy monolithic server; the current `run_server.py` entry point starts `ChatServer` and does not use it.
+- `client.py` reads file data in 4096-byte blocks and passes them to `stream.write`; Stream performs the MTU-safe chunking.
+- The Connection loopback uses simulated sockets. It does not verify the full browser/HTTP UI/client/UDP server flow.

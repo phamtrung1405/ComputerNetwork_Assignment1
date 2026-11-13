@@ -1,6 +1,6 @@
 # M2 AUDIT REPORT — Cryptography, Reliability & Streaming
 
-> **Cập nhật sau bind (2026-11-08):** báo cáo bên dưới mô tả trạng thái **trước** khi sửa. H-3, H-4, H-5, M-3, M-4 đã được xử lý phía M2 (có test); các mục C-1..C-4, H-1, H-2, H-6, M-6 thuộc `connection.py` (M1) và đã có patch đề xuất, chưa áp dụng vào repo. Chi tiết và bằng chứng chạy: `docs/project/PROGRESS.md` §4, `docs/handoff/M1/README.md`.
+> **Phạm vi lịch sử:** các phát hiện và kết quả trong báo cáo này ghi lại trạng thái được kiểm tra ngày 2026-11-08, trước khi tích hợp K1–K11 vào `connection.py`. Tại repository ngày 2026-11-13, `Connection.INTEGRATION_CONTRACT_VERSION == 1`; bộ test hiện tại chạy 156 tests và `tests/test_connection_loopback.py` bao phủ các kiểm tra tích hợp tương ứng bằng socket mô phỏng. Không dùng các kết luận FAIL bên dưới như trạng thái hiện tại. Test loopback không xác nhận full-stack qua HTTP UI và UDP server.
 
 **Ngày audit:** 2026-11-08 · **Nhánh:** `feat/Jaden` · **Người audit:** Claude (chế độ chỉ đọc)
 **Phạm vi:** `src/common/crypto.py`, `src/transport/reliability.py`, `src/transport/stream.py` và tích hợp với `src/transport/connection.py`, `src/common/packet.py` (đọc `client.py:136-232` để xác định cách app gửi file).
@@ -10,7 +10,7 @@
 
 ## I. Executive Summary
 
-**Kết luận ngắn:** các hàm M2 hoạt động đúng khi gọi riêng lẻ (85/85 test pass, có điều kiện ở §IV). Nhưng pipeline thật, tức `Connection` + `Stream` + `ReliabilityManager` + `crypto`, **không truyền được file đáng tin cậy** khi có mất gói hoặc đảo thứ tự.
+**Kết luận tại thời điểm audit 2026-11-08:** các hàm M2 hoạt động đúng khi gọi riêng lẻ (85/85 test pass, có điều kiện ở §IV), nhưng khi đó pipeline `Connection` + `Stream` + `ReliabilityManager` + `crypto` có lỗi tích hợp dưới mất gói hoặc đảo thứ tự. Báo cáo giữ lại các kết quả này như lịch sử; không dùng chúng làm trạng thái hiện tại của code.
 
 Bằng chứng chạy thật (§V): file 10 MB gửi bằng cách app đang dùng (các khối 4096 B, mỗi khối là một message) chỉ chuyển được **30/2560** khối lên tầng ứng dụng khi mất gói 5% và **9/2560** khi có đảo thứ tự. Mạng sạch và đúng thứ tự thì **2560/2560, SHA-256 khớp**.
 
@@ -74,7 +74,7 @@ Trạng thái: **PASS** (đúng + có bằng chứng) · **PARTIAL** · **FAIL**
 | #   | Yêu cầu                                                  | TT                  | Bằng chứng / vị trí                                                                                                                                                                        | Giải thích                                                    |
 | :-- | :------------------------------------------------------- | :------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------ |
 | C1  | `write()` chia fragment theo MTU                         | PASS                | `stream.py:34,86-135`; P11: gói mã hóa 1362 B → đúng 1400 B                                                                                                                                |                                                               |
-| C2  | Tính header + tag vào payload                            | PASS                | `stream.py:34` = 1400−22−16; `constants.MAX_APP_PAYLOAD` đã là 1362                                                                                                                        | Tài liệu cũ (README, `PROJECT_CONTEXT.md` §5.2) vẫn ghi 1378. |
+| C2  | Tính header + tag vào payload                            | PASS                | `stream.py:34` = 1400−22−16; `constants.MAX_APP_PAYLOAD` đã là 1362                                                                                                                        | README và `PROJECT_CONTEXT.md` từng ghi 1378; đã được cập nhật sau audit. |
 | C3  | Offset đủ định vị                                        | PASS                | `stream.py:128,130`; header có `offset` 32-bit                                                                                                                                             |                                                               |
 | C4  | `_try_assemble` ghép đúng theo offset                    | PASS (đơn vị)       | `stream.py:237-285`; `TestStreamReadAndReassembly`                                                                                                                                         |                                                               |
 | C5  | Đảo thứ tự / trùng / mất / đến muộn                      | PARTIAL             | Đơn vị đúng. **Tích hợp sai** vì C-4: message hoàn chỉnh thứ 2 trở đi không bao giờ tới app.                                                                                               |                                                               |
@@ -173,7 +173,7 @@ Gói được thêm vào `failed_packets` nhưng không bị gỡ khỏi `_unack
 - `_consecutive_timeouts` được ghi nhưng không được đọc ở đâu cả (`reliability.py:101,262,326`).
 - `_alloc_seq` không kiểm tra tràn uint32 (`connection.py:108-117`).
 - `encrypt(..., is_server=None)` giữ nonce hướng đơn làm mặc định; an toàn hơn nếu buộc truyền rõ hướng khi có `session_key`.
-- Tài liệu cũ: `README.md` (WebSocket, 1378), `PROJECT_CONTEXT.md` §6-7 (danh sách lỗi đã sửa).
+- Tại thời điểm audit: `README.md` (WebSocket, 1378), `PROJECT_CONTEXT.md` §6-7 (danh sách lỗi đã sửa); các tài liệu trạng thái đã được cập nhật sau audit.
 - `read_incoming` chấp nhận chunk lớn hơn 1362 B (P10). Không phải lỗi bảo mật, chỉ là thiếu kiểm tra đầu vào.
 
 ---
@@ -255,7 +255,7 @@ Chưa thực hiện: UDP thật qua `server.py`/`client.py` (Gate 3), file 50 MB
 | 5   | `reliability.py`: sửa Fast Convergence 0.85 + sửa test, thêm chặn 1.5×cwnd, giải quyết `failed_packets`, timeout, W_max khi vào CA (H-3, H-4, H-5, M-1, M-2) | Phước (M2) | RFC 9438 §4.2/4.7/4.8/4.10                   |
 | 6   | `stream.py`: phát hiện overlap/gap, giới hạn số khóa buffer (M-3)                                                                                            | Phước (M2) | Mục 2                                        |
 | 7   | Viết các test ở §IV, sau đó chạy lại toàn bộ và cập nhật `PROGRESS.md`                                                                                       | Phước      | Mục 3-6                                      |
-| 8   | Đồng bộ tài liệu (README 1378/WebSocket, `PROJECT_CONTEXT.md` §6-7, trích dẫn RFC 8312→9438)                                                                 | Phước      | —                                            |
+| 8   | Đồng bộ tài liệu (README 1378/WebSocket, `PROJECT_CONTEXT.md` §6-7, trích dẫn RFC 8312→9438) tại thời điểm audit                                                                 | Phước      | Lịch sử; README và trạng thái project đã được cập nhật sau audit |
 | 9   | Gate 3: UDP thật qua `server.py`/`client.py`, file lớn, mất 10%                                                                                              | Cả nhóm    | Mục 3-4                                      |
 
 ---

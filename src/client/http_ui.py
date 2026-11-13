@@ -433,7 +433,14 @@ class HttpUI:
             password: str = data.get("password", "")
 
             if self._client is not None:
-                self._client.connect(username, password)
+                if not self._client.connect(username, password):
+                    resp: dict = {
+                        "status": "error",
+                        "message": "Secure handshake timed out. Authentication was not sent; please try again.",
+                    }
+                    self._send_json_response(client_socket, 200, resp)
+                    return
+
                 # Wait up to 2.5 seconds for UDP handshake and auth verification
                 start_t = time.monotonic()
                 while time.monotonic() - start_t < 2.5:

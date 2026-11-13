@@ -16,13 +16,15 @@ from __future__ import annotations
 import struct
 from typing import NamedTuple
 
+from common.constants import HEADER_FORMAT, HEADER_SIZE
+
 # Format: big-endian  B=uint8  I=uint32  H=uint16
 # msg_type(B) + conn_id(I) + seq_num(I) + flags(B) + stream_id(H) + offset(I) + payload_len(H) + reserved(I)
 # 1 + 4 + 4 + 1 + 2 + 4 + 2 + 4 = 22 bytes
-_HEADER_FMT: str = "!BIIBHIHI"
+_HEADER_FMT: str = HEADER_FORMAT
 _HEADER_SIZE: int = struct.calcsize(_HEADER_FMT)
 
-assert _HEADER_SIZE == 22, f"Header must have 22 bytes, current is {_HEADER_SIZE}"
+assert _HEADER_SIZE == HEADER_SIZE, f"Header must have {HEADER_SIZE} bytes, current is {_HEADER_SIZE}"
 
 
 class Header(NamedTuple):

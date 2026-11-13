@@ -54,3 +54,7 @@ agent_fixes/
 agent_fixes_v2/
 evaluation_output/
 tests/
+!tests/
+tests/*
+!tests/test_packet.py
+!tests/test_client.py

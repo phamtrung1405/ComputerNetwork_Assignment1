@@ -86,14 +86,15 @@ class ChatClient:
     # ----------------------- Connection -----------------------
 
     def connect(self, username: str, password: str) -> bool:
-        """Initiate handshake, send AUTH_REQ, and maintain event loop.
+        """Start the handshake and submit AUTH if it completes.
 
         Args:
             username: User login name.
             password: User password (will be hashed with SHA-256).
 
         Returns:
-            ``True`` when connection has been started (auth result arrives via event).
+            ``True`` if the handshake completed and AUTH was submitted;
+            ``False`` if the handshake timed out and AUTH was not sent.
         """
         self._username = username
         if not self._running:
@@ -112,7 +113,9 @@ class ChatClient:
 
         # Wait for handshake completion (up to 5 seconds)
         if not self._connection.handshake_complete.wait(timeout=5.0):
-            logger.warning("Handshake timeout – sending auth unencrypted")
+            logger.error("Handshake timed out; refusing to send AUTH")
+            self._username = None
+            return False
 
         # Send AUTH
         password_hash: str = hashlib.sha256(password.encode("utf-8")).hexdigest()

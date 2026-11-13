@@ -286,14 +286,15 @@ Tệp thực thi script dạng Batch dành riêng cho môi trường Microsoft W
   - Khởi tạo máy chủ web `http_ui = HttpUI(port=args.http_port, client=client)`.
   - Khởi động HTTP UI bằng `http_ui.start()`.
   - Khi người dùng nhấn `Ctrl + C`, tự động thực hiện quy trình dọn dẹp: gọi `http_ui.stop()` đóng máy chủ HTTP và `client.disconnect()` giải phóng socket UDP.
+  - Nếu handshake timeout sau 5 giây, `ChatClient.connect()` từ chối gửi AUTH và trả lỗi; HTTP UI báo người dùng thử lại.
 
 ---
 
 ### 9.3. Tầng giao thức & Tiện ích chung (`src/common/`)
 
 #### 📄 `src/common/constants.py`
-Định nghĩa tập trung toàn bộ các hằng số kỹ thuật của giao thức truyền tải tùy chỉnh trên nền UDP:
-- **Magic Number**: `PROTOCOL_MAGIC = b"\xDE\xAD\xBE\xEF"` (4 bytes nhận diện).
+Định nghĩa tập trung các hằng số kỹ thuật của giao thức truyền tải tùy chỉnh trên nền UDP:
+- **Magic Number**: `PROTOCOL_MAGIC = b"\xDE\xAD\xBE\xEF"` hiện chỉ là hằng dự phòng; `packet.pack()` không thêm và `packet.unpack()` không kiểm tra giá trị này. Nó không thuộc wire format hiện tại.
 - **Loại gói tin (Packet Types - 1 byte uint8)**:
   - `PKT_HELLO` (`0x01`): Client khởi tạo quá trình bắt tay trao đổi khóa.
   - `PKT_HELLO_ACK` (`0x02`): Server phản hồi bắt tay kèm khóa công khai của server.
@@ -309,7 +310,7 @@ Tệp thực thi script dạng Batch dành riêng cho môi trường Microsoft W
   - `FLAG_SYN` (`0x04`): Đánh dấu khởi tạo luồng Stream.
   - `FLAG_ENCRYPTED` (`0x08`): Đánh dấu Payload đã được mã hóa bằng AES-256-GCM.
 - **Quy chuẩn Header nhị phân (22 bytes, Big-Endian)**:
-  - Cấu trúc format: `!BIIBHIHI` tương ứng: `msg_type` (1B), `conn_id` (4B), `seq_num` (4B), `flags` (1B), `stream_id` (2B), `offset` (4B), `payload_len` (2B), `reserved` (4B).
+  - Cấu trúc format dùng chung: `HEADER_FORMAT = HEADER_STRUCT_FMT = "!BIIBHIHI"` tương ứng: `msg_type` (1B), `conn_id` (4B), `seq_num` (4B), `flags` (1B), `stream_id` (2B), `offset` (4B), `payload_len` (2B), `reserved` (4B).
 - **Kích thước gói & MTU**:
   - `MAX_UDP_PAYLOAD = 1400` bytes (giới hạn an toàn chống phân mảnh IP).
   - `MAX_APP_PAYLOAD = 1362` bytes (sau khi trừ 22 bytes header và 16 bytes AEAD GCM tag theo ADR-007).
@@ -327,16 +328,14 @@ Cung cấp các phép toán mật mã học bảo mật tầng truyền tải:
 - **`generate_keypair() -> tuple[X25519PrivateKey, bytes]`**:
   - Sinh cặp khóa bất đối xứng trên đường cong Elliptic Curve25519 (X25519) dùng cho quá trình trao đổi khóa Diffie-Hellman.
   - Trả về tuple chứa đối tượng khóa riêng `X25519PrivateKey` và mảng 32 bytes của khóa công khai.
-- **`derive_shared_secret(private_key: X25519PrivateKey, peer_public_bytes: bytes) -> bytes`**:
-  - Thực hiện phép nhân điểm ECDH giữa khóa riêng của endpoint hiện tại với khóa công khai của bên đối tác để tìm điểm bí mật chung.
-  - Dùng thuật toán HKDF (HMAC-based Extract-and-Expand Key Derivation Function) với hàm băm SHA-256 để trích xuất ra một khóa phiên đối xứng AES-256 (32 bytes) duy nhất.
-- **`encrypt(payload: bytes, session_key: bytes, packet_num: int) -> bytes`**:
-  - Mã hóa dữ liệu ứng dụng bằng thuật toán AES-256-GCM (Authenticated Encryption with Associated Data).
-  - Sử dụng số thứ tự gói tin (`packet_num`) được chuyển đổi thành chuỗi 12 bytes Big-Endian để làm Nonce duy nhất cho từng gói tin (chống tấn công lặp lại - Replay Attack).
-  - Trả về chuỗi bytes gồm `ciphertext` gắn kèm 16 bytes Authentication Tag.
-- **`decrypt(ciphertext: bytes, session_key: bytes, packet_num: int) -> bytes`**:
-  - Tái tạo Nonce 12-byte từ `packet_num` và thực hiện xác thực tính toàn vẹn cùng giải mã bằng AES-GCM.
-  - Trả về dữ liệu gốc (plaintext). Bắn ngoại lệ `InvalidTag` nếu gói tin bị giả mạo hoặc sai lệch trên đường truyền.
+- **`derive_session_keys(private_key, peer_public_bytes) -> tuple[bytes, bytes]`**:
+  - Dùng X25519 và HKDF-SHA256 để tạo hai khóa ghi 32-byte riêng cho client và server. `Connection` chọn khóa gửi/nhận theo vai trò.
+- **`derive_shared_secret(...) -> bytes`**:
+  - Hàm tương thích cũ tạo một khóa không phân tách theo chiều; handshake hiện tại dùng `derive_session_keys()`.
+- **`encrypt(payload, session_key, packet_num, associated_data=None, is_server=None) -> bytes`**:
+  - Mã hóa AES-256-GCM và trả ciphertext kèm tag 16-byte. Trong `Connection`, nonce phụ thuộc số thứ tự và vai trò bên gửi; 22-byte header chính xác được truyền làm AAD.
+- **`decrypt(ciphertext, session_key, packet_num, associated_data=None, is_server=None) -> bytes`**:
+  - Xác thực AAD và tag trước khi trả plaintext; dữ liệu bị sửa sẽ gây `InvalidTag`.
 
 #### 📄 `src/common/packet.py`
 Chịu trách nhiệm tuần tự hóa (serialization) và giải tuần tự hóa (deserialization) cấu trúc Header nhị phân 22-byte:
@@ -345,7 +344,7 @@ Chịu trách nhiệm tuần tự hóa (serialization) và giải tuần tự h�
 - **`pack(msg_type, conn_id, seq_num, flags, stream_id, offset, payload) -> bytes`**:
   - Tính toán độ dài `payload_len`, sử dụng hàm `struct.pack("!BIIBHIHI", ...)` để đóng gói chính xác 22 bytes header theo thứ tự mạng (Network Byte Order - Big Endian), sau đó nối liền với mảng bytes của `payload`.
 - **`unpack(raw_bytes: bytes) -> tuple[Header, bytes]`**:
-  - Kiểm tra độ dài tối thiểu $\ge 22$ bytes. Bóc tách 22 bytes đầu tiên thành thực thể `Header`, trích xuất phần `payload` còn lại dựa trên trường `payload_len`, trả về bộ dữ liệu `(header, payload)`.
+  - Kiểm tra datagram có ít nhất 22 bytes, bóc tách header và lấy tối đa `payload_len` bytes tiếp theo. Hiện tại hàm chưa từ chối riêng payload ngắn hơn khai báo hoặc byte dư.
 
 ---
 
@@ -360,7 +359,7 @@ Mô phỏng một kết nối logic hướng kết nối, có trạng thái (Sta
   - **`get_or_create_stream(stream_id: int) -> Stream`**: Tìm kiếm hoặc tạo mới đối tượng `Stream` tương ứng với mã định danh luồng `stream_id`.
   - **`allocate_stream() -> Stream`**: Cấp phát tự động một luồng mới với ID duy nhất (phía Client sử dụng các ID số lẻ $1, 3, 5...$, phía Server dùng các số chẵn $2, 4, 6...$ để tránh xung đột).
   - **`_stream_send_callback(stream_id, offset, chunk, flags)`**: Hàm callback nội bộ được đối tượng Stream kích hoạt khi có một đoạn dữ liệu (chunk) cần gửi ra mạng; chuyển tiếp dữ liệu này thành gói tin `PKT_DATA`.
-  - **`send_packet(packet_type, stream_id, payload, flags=FLAG_NONE, offset=0)`**: Cấp phát `seq_num`, thực hiện mã hóa AES-GCM (nếu gói là `PKT_DATA` và đã hoàn tất bắt tay), gắn cờ `FLAG_ENCRYPTED`, đóng gói qua `packet.pack()`, lưu vào bộ đệm của `ReliabilityManager` (để theo dõi ACK và truyền lại) và gửi trực tiếp qua socket.
+  - **`send_packet(packet_type, stream_id, payload, flags=FLAG_NONE, offset=0)`**: Đưa `PKT_DATA` vào hàng đợi; `_flush_send_queue()` chỉ gửi khi `reliability.can_send()` cho phép. Khi khóa ghi đã được thiết lập, DATA được mã hóa bằng khóa theo vai trò, header được dùng làm AAD, và gói đã mã hóa được lưu để truyền lại nguyên byte. Nếu chưa có khóa, code transport vẫn có nhánh DATA không mã hóa; caller phải chờ handshake thành công.
   - **`_raw_send(data: bytes)`**: Thực hiện lệnh `self.sock.sendto(data, self.remote_addr)` để gửi các byte dữ liệu thô ra mạng qua socket UDP.
   - **`receive_packet(raw_bytes: bytes)`**: Tiếp nhận dữ liệu UDP thô, cập nhật mốc thời gian nhận cuối (`_last_recv_time`), giải mã header và chuyển tiếp xử lý tùy theo `msg_type`:
     - Gói `PKT_ACK` $\to$ chuyển cho `_handle_ack()`.
@@ -369,11 +368,11 @@ Mô phỏng một kết nối logic hướng kết nối, có trạng thái (Sta
     - Gói `PKT_HELLO_ACK` $\to$ chuyển cho `_handle_hello_ack()`.
     - Gói `PKT_HEARTBEAT` $\to$ gọi `_send_heartbeat_ack()`.
   - **`_handle_ack(payload: bytes)`**: Phân tích dữ liệu JSON chứa danh sách các dải xác nhận `ranges` từ đối phương và chuyển cho `reliability.process_sack()` để xóa các gói tin đã đến đích an toàn.
-  - **`_handle_data(header: packet.Header, payload: bytes)`**: Gửi phản hồi xác nhận ngay lập tức qua `_send_ack(header.seq_num)`. Nếu dữ liệu được đánh dấu mã hóa, thực hiện giải mã bằng khóa phiên. Sau đó chuyển chunk dữ liệu kèm offset và cờ `FLAG_EOM` vào `Stream` tương ứng. Nếu `Stream` đã thu thập đủ toàn bộ tin nhắn, hàm gọi tiếp callback `on_app_message`.
+  - **`_handle_data(header, payload, header_aad)`**: Sau handshake, từ chối DATA không mã hóa; giải mã và xác thực header AAD trước, chuyển chunk vào `Stream`, rồi mới ACK và gọi callback cho từng message hoàn chỉnh.
   - **`_send_ack(seq_num: int)`**: Đóng gói số thứ tự `seq_num` vào dải SACK dưới dạng JSON và gửi gói `PKT_ACK` về phía bên gửi.
   - **`handle_handshake()`**: Khởi tạo tiến trình bắt tay từ phía Client: sinh cặp khóa X25519 và gửi gói `PKT_HELLO` chứa public key sang Server.
-  - **`_handle_hello(header, payload)`**: Phía Server xử lý yêu cầu bắt tay: đọc public key của Client, sinh cặp khóa X25519 của Server, dẫn xuất khóa phiên chung qua ECDH + HKDF, gửi gói phản hồi `PKT_HELLO_ACK` chứa public key của Server và bật cờ `handshake_complete`.
-  - **`_handle_hello_ack(header, payload)`**: Phía Client xử lý phản hồi bắt tay: đọc public key của Server, hoàn tất tính toán khóa phiên AES-256 và kích hoạt sự kiện `handshake_complete.set()`.
+  - **`_handle_hello(header, payload)`**: Phía Server nhận public key của Client, dẫn xuất hai khóa ghi theo chiều bằng X25519 + HKDF, gửi `PKT_HELLO_ACK` và đánh dấu handshake hoàn tất. Public key chưa được xác thực danh tính server.
+  - **`_handle_hello_ack(header, payload)`**: Phía Client nhận public key của Server, dẫn xuất cùng hai khóa theo vai trò và kích hoạt `handshake_complete`.
   - **`_send_heartbeat()`**: Gửi gói tin `PKT_HEARTBEAT` để kiểm tra độ trễ và giữ cho kết nối không bị ngắt quãng.
   - **`_send_heartbeat_ack()`**: Phản hồi gói `PKT_HEARTBEAT_ACK` khi nhận được heartbeat từ đối tác.
   - **`tick()`**: Hàm tuần hoàn được vòng lặp điều phối gọi định kỳ (50ms):
@@ -465,7 +464,7 @@ Máy khách UDP, quản lý việc kết nối đến máy chủ trung tâm, tru
 
 - **Lớp `ChatClient`**:
   - **`__init__(server_ip, server_port)`**: Mở UDP socket non-blocking ngẫu nhiên trên máy khách, tạo đối tượng `Connection`, khởi tạo hàng đợi `event_queue` và từ điển theo dõi trạng thái truyền file `_file_transfers`.
-  - **`connect(username: str, password: str) -> bool`**: Khởi động bắt tay bảo mật qua `_connection.handle_handshake()`, khởi chạy các thread chạy ngầm `poll_network` và `_tick_loop`, chờ hoàn tất trao đổi khóa (tối đa 5s), băm SHA-256 mật khẩu và gửi bản tin xác thực `AUTH` lên Server.
+  - **`connect(username: str, password: str) -> bool`**: Khởi động handshake qua `_connection.handle_handshake()`, chạy các thread `poll_network` và `_tick_loop`, chờ tối đa 5 giây rồi gửi AUTH chứa SHA-256 mật khẩu. Lưu ý: nếu hết thời gian chờ, code hiện vẫn gửi AUTH; khi handshake chưa hoàn tất, dữ liệu có thể chưa được mã hóa.
   - **`send_chat(target: str, text: str)`**: Đóng gói nội dung tin nhắn dạng JSON và gửi qua Stream 0.
   - **`start_file_transfer(file_path: str, target: str = "all") -> Optional[int]`**: Kiểm tra tệp tin trên ổ đĩa, tính toán mã băm SHA-256 của toàn bộ file, yêu cầu Connection cấp phát một `Stream ID` riêng biệt, gửi bản tin metadata `FILE` qua Stream 0, và khởi tạo một thread nền chạy hàm `_transfer_file_data()`.
   - **`_transfer_file_data(file_path, stream, target)`**: Luồng truyền dữ liệu tệp tin: đọc file theo từng khối 4096 bytes, ghi vào luồng bằng `stream.write()`, kiểm soát lưu lượng dựa trên phản hồi của cửa sổ tắc nghẽn (`reliability.can_send()`), cập nhật tiến độ phần trăm và đẩy sự kiện `FILE_COMPLETE` vào `event_queue`.
@@ -582,14 +581,14 @@ graph TD
    - Mỗi Client ([run_client.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/run_client.py)) tự khởi chạy một tiến trình [HttpUI](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/http_ui.py) cục bộ tại cổng trống (8080 cho Alice, 8081 cho Bob...) để phục vụ giao diện Web và cầu nối IPC.
 2. **Giai đoạn Bắt tay Bảo mật (X25519 ECDH Handshake)**:
    - Khi Client kết nối UDP đến Server, hàm [handle_handshake()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L324-L346) sinh cặp khóa X25519 và gửi gói tin `PKT_HELLO` (chứa `public_key` của Client).
-   - Server nhận `PKT_HELLO`, sinh cặp khóa X25519 của Server, dùng ECDH kết hợp HKDF-SHA256 để dẫn xuất khóa đối xứng `session_key` (AES-256), sau đó gửi lại gói `PKT_HELLO_ACK` chứa `public_key` của Server.
-   - Client nhận `PKT_HELLO_ACK`, hoàn tất tính toán khóa `session_key` tương đương. Toàn bộ các gói tin dữ liệu về sau đều được mã hóa bằng **AES-256-GCM**.
+   - Server nhận `PKT_HELLO`, sinh cặp khóa X25519 của Server, dùng ECDH và HKDF-SHA256 để dẫn xuất khóa ghi riêng theo từng chiều, rồi gửi `PKT_HELLO_ACK` chứa `public_key` của Server.
+   - Client nhận `PKT_HELLO_ACK`, dẫn xuất cùng hai khóa và chọn khóa gửi/nhận theo vai. Sau khi handshake hoàn tất, DATA được mã hóa bằng **AES-256-GCM**. Handshake chưa xác minh danh tính server.
 3. **Giai đoạn Đăng nhập & Xác thực Phiên (Authentication)**:
-   - Client băm mật khẩu bằng SHA-256 và gửi bản tin `AUTH` qua Stream 0.
+   - Chỉ sau khi handshake hoàn tất, Client mới băm mật khẩu bằng SHA-256 và gửi bản tin `AUTH` qua Stream 0. Nếu handshake timeout, đăng nhập bị dừng và AUTH không được gửi.
    - [Session](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py) tại Server đối chiếu tài khoản với cơ sở dữ liệu SQLite [users.db](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/users.db) qua [database.py](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/database.py). Nếu hợp lệ, gán `authenticated = True`, lưu ánh xạ `username -> conn_id`, và phát thông báo `SYSTEM` cho toàn phòng chat.
 4. **Giai đoạn Truyền dữ liệu Tin cậy & Kiểm soát Tắc nghẽn**:
    - Dữ liệu ứng dụng (tin nhắn, truyền file) được đưa vào [Stream](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py), phân chia thành các chunk tối đa 1362 bytes.
-   - Mỗi gói tin gán số thứ tự tuần tự `seq_num`. Bên nhận gửi ngay gói xác nhận `PKT_ACK` chứa dải SACK `ranges: [[start, end]]`.
+   - Mỗi gói tin gán số thứ tự tuần tự `seq_num`. Bên nhận xác thực/giải mã DATA và chỉ gửi `PKT_ACK` chứa dải SACK `ranges: [[start, end]]` sau khi Stream chấp nhận chunk.
    - [ReliabilityManager](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/reliability.py) tính mẫu độ trễ `sample_rtt`, cập nhật $SRTT, RTTVAR, RTO$ theo chuẩn **RFC 6298** và điều chỉnh kích thước cửa sổ tắc nghẽn $cwnd$ theo hàm bậc ba của thuật toán **CUBIC**. Nếu quá hạn RTO mà chưa có ACK, gói tin sẽ được tự động truyền lại.
 5. **Giai đoạn Giữ kết nối (Keepalive) & Đóng kết nối**:
    - Hàm [tick()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L443-L469) chạy tuần hoàn mỗi 50ms: gửi gói tin `PKT_HEARTBEAT` nếu sau 5 giây không có dữ liệu, và đánh dấu đóng kết nối nếu im lặng quá `IDLE_TIMEOUT = 30` giây.
@@ -705,11 +704,11 @@ sequenceDiagram
    - Kích hoạt callback [_stream_send_callback()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L155-L167).
 2. **Cấp phát số thứ tự và Mã hóa ([Connection.send_packet()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L170-L210))**:
    - Cấp phát thread-safe số thứ tự gói tin mới: `seq = self._alloc_seq()` (ví dụ: `seq = 5`).
-   - Nhận thấy kết nối đã có `_session_key` (được thương lượng thành công từ bước bắt tay ECDH X25519 với Server) và `packet_type == PKT_DATA`:
-     - Gọi hàm [encrypt(payload, session_key, seq)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/crypto.py#L55-L77).
-     - Hàm chuyển đổi số `seq = 5` thành chuỗi 12-byte Big-Endian để làm **Nonce** duy nhất.
-     - Sử dụng thuật toán **AES-256-GCM** mã hóa `payload` thành `ciphertext` kèm theo 16 bytes Authentication Tag nối ở đuôi.
-     - Bật cờ `FLAG_ENCRYPTED` (`0x08`) $\to$ Tổng cờ `flags = FLAG_EOM | FLAG_ENCRYPTED = 0x09`.
+   - Khi đã có các khóa ghi/nhận theo chiều từ handshake X25519 và `packet_type == PKT_DATA`:
+     - Dựng header với `FLAG_ENCRYPTED` và `payload_len` bằng độ dài dữ liệu cộng 16-byte tag, rồi dùng chính header đó làm AAD.
+     - Mã hóa bằng khóa gửi theo chiều hiện tại. Nonce gồm 1 byte vai trò gửi và 11 byte Big-Endian chứa `seq`; cách này phân biệt nonce của Client và Server.
+     - AES-256-GCM trả về ciphertext kèm tag xác thực 16-byte.
+     - Với chunk cuối của message, tổng cờ trong ví dụ là `FLAG_EOM | FLAG_ENCRYPTED = 0x09`.
 3. **Đóng gói nhị phân 22-byte Header ([packet.pack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/packet.py#L42-L72))**:
    - Sử dụng định dạng mạng Big-Endian `!BIIBHIHI`:
      - `msg_type = PKT_DATA (0x03)` (1 byte)
@@ -726,18 +725,18 @@ sequenceDiagram
 5. **Gửi Socket UDP**:
    - Gọi `self.sock.sendto(raw, ('127.0.0.1', 9000))` để truyền gói tin ra tầng mạng UDP.
 
-#### 🔹 Bước 4: Máy chủ trung tâm tiếp nhận, Phản hồi ACK, Giải mã và Định tuyến (`server.py` & `session.py`)
+#### 🔹 Bước 4: Máy chủ trung tâm xác thực, giải mã, ACK và định tuyến (`server.py` & `session.py`)
 1. **Tiếp nhận gói tin ([ChatServer._read_datagrams()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py#L102-L113))**:
    - Vòng lặp `selectors` tại Server phát hiện socket UDP có dữ liệu đọc, gọi `recvfrom()`.
    - Hàm [handle_datagram()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/server.py#L116-L146) gọi [packet.unpack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/packet.py#L75-L103) bóc tách 22 bytes header, đọc được `conn_id` của Alice và chuyển gói tin cho `session_alice.connection.receive_packet(data)`.
-2. **Gửi phản hồi ACK tức thời ([Connection._handle_data()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L270-L301))**:
-   - Server gọi ngay [_send_ack(seq_num=5)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L302-L321), tạo gói tin `PKT_ACK` mang payload JSON `{"ranges": [[5, 5]]}` gửi ngược lại ngay lập tức về IP:Port của Alice.
+2. **Xác thực, giải mã và nhận chunk ([Connection._handle_data()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L270-L301))**:
+   - Server dùng khóa nhận từ Client và đúng 22-byte header làm AAD để xác thực, giải mã; sau đó đưa chunk vào `Stream`. DATA không hợp lệ hoặc bị Stream từ chối sẽ không được ACK.
+3. **Gửi ACK sau khi chunk được chấp nhận**:
+   - Khi xác thực và nhận chunk thành công, Server tạo `PKT_ACK` với payload JSON `{"ranges": [[5, 5]]}` rồi gửi về Alice.
    - Khi Alice nhận được gói này, hàm [process_sack()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/reliability.py#L79-L107) phía Alice sẽ:
      - Xóa gói 5 khỏi danh sách chờ `_unacked`.
      - Tính mẫu RTT: `sample_rtt = time.monotonic() - sent_time`.
      - Cập nhật RTO theo chuẩn RFC 6298 và tăng kích thước cửa sổ tắc nghẽn CUBIC $cwnd$.
-3. **Giải mã dữ liệu**:
-   - Kiểm tra thấy cờ `FLAG_ENCRYPTED`, Server gọi [decrypt(payload, session_key_alice, seq_num=5)](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/common/crypto.py#L80-L104) để xác minh tính toàn vẹn (Authentication Tag) và giải mã thu lại dữ liệu gốc.
 4. **Tái lắp ghép luồng Stream ([Stream.read_incoming()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py#L64-L85))**:
    - Đưa chunk vào bộ đệm Stream 0. Vì gói có `offset = 0` khớp với `_expected_offset = 0` và có cờ `is_eom = True`, hàm [_try_assemble()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/stream.py#L87-L113) hoàn tất ghép bản tin và trả về mảng bytes JSON.
 5. **Xử lý nghiệp vụ tại Session ([Session.process_payload()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/server/session.py#L60-L89))**:
@@ -764,18 +763,18 @@ sequenceDiagram
 #### 🔹 Bước 5: Server mã hóa và truyền tiếp gói tin UDP tới Bob (`connection.py`)
 1. Hàm `send_packet()` của kết nối Bob trên Server được kích hoạt:
    - Cấp phát `seq_num` mới cho phiên giao tiếp với Bob (ví dụ: `seq = 12`).
-   - Sử dụng **khóa phiên đối xứng riêng giữa Server và Bob** (`session_key_bob`) để mã hóa AES-256-GCM với Nonce dẫn xuất từ `seq = 12`.
+   - Sử dụng **khóa ghi theo chiều Server → Bob** để mã hóa AES-256-GCM với nonce theo số thứ tự và vai trò bên gửi.
+   - Gắn header 22-byte vào phép xác thực AES-GCM dưới dạng AAD.
    - Đóng gói 22 bytes header với `conn_id = bob_conn_id`, `stream_id = 0`, `flags = FLAG_ENCRYPTED | FLAG_EOM`.
    - Lưu vào `ReliabilityManager` của Bob trên Server để theo dõi xác nhận ACK.
    - Gửi datagram UDP qua socket tới địa chỉ `remote_addr` của Bob (IP và cổng mạng Bob đang lắng nghe).
 
-#### 🔹 Bước 6: Bob Client tiếp nhận gói UDP, Gửi ACK, Giải mã và đẩy vào Event Queue (`client.py`)
+#### 🔹 Bước 6: Bob Client tiếp nhận gói UDP, giải mã, ACK và đẩy vào Event Queue (`client.py`)
 1. Luồng chạy ngầm [poll_network()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L236-L253) trên Client của Bob liên tục thực hiện `self._sock.recvfrom()`.
 2. Khi nhận được datagram, hàm gọi `self._connection.receive_packet(data)`.
 3. Hàm [_handle_data()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/transport/connection.py#L270-L301) phía Bob:
-   - Gửi gói tin `PKT_ACK` chứa `ranges: [[12, 12]]` ngược lại cho Server. (Server nhận được ACK này sẽ xóa gói 12 khỏi danh sách unacked của Bob).
-   - Dùng `_session_key` của Bob và `seq_num = 12` để giải mã payload bằng AES-256-GCM.
-   - Đẩy dữ liệu vào `Stream(0)` phía Bob để ráp nối chuỗi byte.
+   - Dùng khóa nhận theo chiều Server → Bob, số thứ tự gói và header AAD để giải mã payload bằng AES-256-GCM; sau đó đẩy dữ liệu vào `Stream(0)`.
+   - Chỉ sau khi Stream chấp nhận chunk, Bob mới gửi `PKT_ACK` chứa `ranges: [[12, 12]]` về Server.
    - Kích hoạt callback [ChatClient._on_app_message()](file:///d:/Hoc_Tap/261/MMT/blt1_2/ComputerNetwork_Assignment1/src/client/client.py#L266-L293).
 4. `_on_app_message()` phân giải JSON và đẩy bản tin vào hàng đợi sự kiện:
    ```python

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import queue
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,6 +134,154 @@ class HttpUISessionLockTests(unittest.TestCase):
         self.assertEqual(args[1], 403)
         self.assertTrue(args[2]["port_locked"])
         self.assertIn("đang có tài khoản @alice", args[2]["message"])
+
+
+class ClientFileTransferRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_mock_client(self, username: str) -> ChatClient:
+        client = ChatClient.__new__(ChatClient)
+        client._username = username
+        client._authenticated = True
+        client._running = True
+        client.event_queue = queue.Queue()
+        client._file_transfers = {}
+        client._incoming_files = {}
+        client._early_file_chunks = {}
+        client._download_dir = os.path.join(self.temp_dir, f"dl_{username}")
+        os.makedirs(client._download_dir, exist_ok=True)
+        client._connection = Mock()
+        client._connection._next_stream_id = 1
+        client._connection._streams = {}
+        client._send_json = Mock()
+        return client
+
+    def test_outgoing_file_does_not_contaminate_incoming_files(self) -> None:
+        client = self._create_mock_client("alice")
+        test_file = os.path.join(self.temp_dir, "alice_notes.txt")
+        with open(test_file, "wb") as f:
+            f.write(b"Alice's secret content")
+
+        mock_stream = Mock()
+        mock_stream.stream_id = 42
+        client._connection.allocate_stream = Mock(return_value=mock_stream)
+
+        sid = client.start_file_transfer(test_file, "bob")
+        self.assertEqual(sid, 42)
+        # Outgoing file MUST NOT be in incoming_files
+        self.assertNotIn(42, client._incoming_files)
+        self.assertIn(42, client._file_transfers)
+        # Senders can still download their own file via fallback to file_transfers
+        name, path = client.get_download_file(42)
+        self.assertEqual(name, "alice_notes.txt")
+        self.assertEqual(path, test_file)
+
+    def test_bidirectional_file_download_resolution(self) -> None:
+        alice = self._create_mock_client("alice")
+        bob = self._create_mock_client("bob")
+
+        # 1. Alice creates outgoing transfer on stream 10
+        alice_file = os.path.join(self.temp_dir, "alice_file.txt")
+        with open(alice_file, "wb") as f:
+            f.write(b"Content from Alice")
+        alice_stream = Mock()
+        alice_stream.stream_id = 10
+        alice._connection.allocate_stream = Mock(return_value=alice_stream)
+        alice.start_file_transfer(alice_file, "bob")
+
+        # 2. Bob creates outgoing transfer on stream 20
+        bob_file = os.path.join(self.temp_dir, "bob_file.txt")
+        with open(bob_file, "wb") as f:
+            f.write(b"Content from Bob")
+        bob_stream = Mock()
+        bob_stream.stream_id = 20
+        bob._connection.allocate_stream = Mock(return_value=bob_stream)
+        bob.start_file_transfer(bob_file, "alice")
+
+        # 3. Simulate Bob receiving Alice's file (stream 10)
+        alice_hash = hashlib.sha256(b"Content from Alice").hexdigest()
+        bob._on_app_message(0, json.dumps({
+            "type": "FILE_READY",
+            "stream_id": 10,
+            "filename": "alice_file.txt",
+            "size": len(b"Content from Alice"),
+            "sha256": alice_hash,
+            "from": "alice",
+            "target": "bob",
+        }).encode("utf-8"))
+        bob._on_app_message(10, b"Content from Alice")
+
+        # 4. Simulate Alice receiving Bob's file (stream 20)
+        bob_hash = hashlib.sha256(b"Content from Bob").hexdigest()
+        alice._on_app_message(0, json.dumps({
+            "type": "FILE_READY",
+            "stream_id": 20,
+            "filename": "bob_file.txt",
+            "size": len(b"Content from Bob"),
+            "sha256": bob_hash,
+            "from": "bob",
+            "target": "alice",
+        }).encode("utf-8"))
+        alice._on_app_message(20, b"Content from Bob")
+
+        # Verify Alice downloads Bob's file when passing Bob's stream_id
+        dl_bob_name, dl_bob_path = alice.get_download_file(20)
+        self.assertEqual(dl_bob_name, "bob_file.txt")
+        with open(dl_bob_path, "rb") as f:
+            self.assertEqual(f.read(), b"Content from Bob")
+
+        # Verify Bob downloads Alice's file when passing Alice's stream_id
+        dl_alice_name, dl_alice_path = bob.get_download_file(10)
+        self.assertEqual(dl_alice_name, "alice_file.txt")
+        with open(dl_alice_path, "rb") as f:
+            self.assertEqual(f.read(), b"Content from Alice")
+
+    def test_early_chunks_buffered_until_file_ready(self) -> None:
+        client = self._create_mock_client("bob")
+        raw_data = b"Pre-delivered file chunks before metadata"
+        file_hash = hashlib.sha256(raw_data).hexdigest()
+
+        # Chunk arrives BEFORE FILE_READY
+        client._on_app_message(55, raw_data)
+        self.assertIn(55, client._early_file_chunks)
+        self.assertEqual(client._early_file_chunks[55], [raw_data])
+
+        # Now FILE_READY metadata arrives
+        client._on_app_message(0, json.dumps({
+            "type": "FILE_READY",
+            "stream_id": 55,
+            "filename": "early.dat",
+            "size": len(raw_data),
+            "sha256": file_hash,
+            "from": "alice",
+            "target": "bob",
+        }).encode("utf-8"))
+
+        # Early chunk should be flushed and file assembled
+        self.assertNotIn(55, client._early_file_chunks)
+        self.assertEqual(client._incoming_files[55]["status"], "completed")
+        fname, fpath = client.get_download_file(55)
+        self.assertEqual(fname, "early.dat")
+        with open(fpath, "rb") as f:
+            self.assertEqual(f.read(), raw_data)
+
+
+    def test_allocate_stream_skips_existing_and_wraps(self) -> None:
+        from transport.connection import Connection
+        mock_sock = Mock()
+        conn = Connection(mock_sock, ("127.0.0.1", 9000), conn_id=1, is_server=False)
+        conn._next_stream_id = 65533
+        conn.get_or_create_stream(65533)
+        conn.get_or_create_stream(1)
+
+        # 65533 and 1 exist. Allocating should skip 65533, wrap to 1, skip 1, and allocate 3
+        s = conn.allocate_stream()
+        self.assertEqual(s.stream_id, 3)
+        self.assertIn(3, conn._streams)
 
 
 if __name__ == "__main__":

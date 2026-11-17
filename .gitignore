@@ -60,3 +60,7 @@ tests/*
 !tests/test_client.py
 docs/
 agent_output/
+dist/
+*.zip
+certs/
+*.pem

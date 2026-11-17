@@ -67,6 +67,7 @@ class ChatClient:
             is_server=False,
             on_app_message=self._on_app_message,
         )
+        self._connection._next_stream_id = random.randrange(1, 60000, 2)
 
         self._running: bool = False
         self._username: Optional[str] = None
@@ -83,6 +84,7 @@ class ChatClient:
         self._file_transfers: dict[int, dict] = {}
         # Track incoming file downloads
         self._incoming_files: dict[int, dict] = {}
+        self._early_file_chunks: dict[int, list[bytes]] = {}
         self._download_dir: str = os.path.join(tempfile.gettempdir(), "streamchat_downloads")
         os.makedirs(self._download_dir, exist_ok=True)
         # Track active online users
@@ -259,18 +261,6 @@ class ChatClient:
             "status": "transferring",
             "file_path": file_path,
         }
-        self._incoming_files[stream_id] = {
-            "filename": filename,
-            "size": file_size,
-            "sha256": file_hash,
-            "from": self._username,
-            "target": target,
-            "received": file_size,
-            "chunks": [],
-            "file_path": file_path,
-            "status": "completed",
-            "download_url": f"/api/download?stream_id={stream_id}&filename={quote(filename)}",
-        }
 
         return stream_id
 
@@ -353,8 +343,11 @@ class ChatClient:
             data: Message data bytes.
         """
         # If this is a chunk on an active file stream, assemble it
-        if stream_id != 0 and stream_id in self._incoming_files:
-            self._handle_incoming_file_chunk(stream_id, data)
+        if stream_id != 0:
+            if stream_id in self._incoming_files:
+                self._handle_incoming_file_chunk(stream_id, data)
+            else:
+                self._early_file_chunks.setdefault(stream_id, []).append(data)
             return
 
         try:
@@ -400,6 +393,7 @@ class ChatClient:
                 is_server=False,
                 on_app_message=self._on_app_message,
             )
+            self._connection._next_stream_id = random.randrange(1, 60000, 2)
         elif msg.get("type") == "USER_LIST":
             self.online_users = list(msg.get("users", []))
         elif msg.get("type") == "HISTORY_RESP":
@@ -442,6 +436,11 @@ class ChatClient:
                     self._incoming_files[sid]["file_path"] = saved_path
                     self._incoming_files[sid]["status"] = "completed"
                     msg["completed"] = True
+                else:
+                    # Flush any early chunks that arrived before metadata
+                    early_chunks = self._early_file_chunks.pop(sid, [])
+                    for chunk in early_chunks:
+                        self._handle_incoming_file_chunk(sid, chunk)
 
         self.event_queue.put(msg)
 

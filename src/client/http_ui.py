@@ -382,12 +382,14 @@ class HttpUI:
             ev_type = event.get("type")
             if ev_type == "FILE_READY":
                 sid = event.get("stream_id")
+                from_u = event.get("from")
                 found = False
                 for idx, existing in enumerate(self._message_history):
                     if (
                         existing.get("type") == "FILE_READY"
                         and sid is not None
                         and existing.get("stream_id") == sid
+                        and existing.get("from") == from_u
                     ):
                         self._message_history[idx].update(event)
                         found = True

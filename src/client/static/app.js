@@ -565,9 +565,13 @@ function handleFileReady(data) {
     const isTarget = data.target === "all" || (data.target || "").toLowerCase() === myUser || isOutgoing;
     if (!isTarget) return;
 
-    // Check if file card already exists to avoid duplicate entries and update download URL
-    const existing = (data.stream_id && document.querySelector(`.message[data-stream-id="${data.stream_id}"]`)) ||
-                     document.querySelector(`.message[data-filename="${encodeURIComponent(data.filename)}"]`);
+    // Check if file card already exists to avoid duplicate entries and update download URL.
+    // Match both stream_id AND direction (outgoing vs incoming) so incoming file cards
+    // from other users never collide with the sender's outgoing file cards.
+    const dirClass = isOutgoing ? "outgoing" : "incoming";
+    const existing = data.stream_id
+        ? document.querySelector(`.message.${dirClass}[data-stream-id="${data.stream_id}"]`)
+        : null;
     if (existing) {
         if (data.download_url) {
             const dlBtn = existing.querySelector(".btn-download-file");

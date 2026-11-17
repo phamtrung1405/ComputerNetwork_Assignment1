@@ -166,8 +166,15 @@ class Connection:
             Newly created Stream object.
         """
         with self._streams_lock:
+            # Skip any stream IDs already in use or 0, wrapping within uint16 range (1..65535)
+            while self._next_stream_id in self._streams or self._next_stream_id == 0:
+                self._next_stream_id = (self._next_stream_id + 2) % 65535
+                if self._next_stream_id == 0:
+                    self._next_stream_id = 1 if not self.is_server else 2
             sid = self._next_stream_id
-            self._next_stream_id += 2  # maintain odd/even parity
+            self._next_stream_id = (self._next_stream_id + 2) % 65535
+            if self._next_stream_id == 0:
+                self._next_stream_id = 1 if not self.is_server else 2
             stream = Stream(
                 stream_id=sid,
                 send_callback=self._stream_send_callback,

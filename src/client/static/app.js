@@ -60,6 +60,9 @@ let isConnected = false;
 let activeTarget = "all";  // "all" or specific username
 let eventSource = null;
 let selectedFile = null;
+let oldestMessageId = null;
+let isLoadingHistory = false;
+let hasMoreHistory = true;
 
 // ═══════════════════════════════════════════════
 // UTILITIES
@@ -259,6 +262,7 @@ function handleAuthSuccess(data) {
     msgInput.focus();
 
     addSystemMessage(data.message || `Successfully logged in as @${currentUsername}!`);
+    loadInitialChatHistory("all");
 }
 
 function handleAuthResponse(data) {
@@ -324,6 +328,7 @@ function selectChatTarget(target) {
         btn.classList.toggle("active", btn.dataset.username === target);
     });
 
+    loadInitialChatHistory(target);
     msgInput.focus();
 }
 
@@ -340,12 +345,15 @@ function handleChatMessage(data) {
         return;
     }
     const isOutgoing = false;
-    addChatMessage(data.from, data.text, data.timestamp, isOutgoing, data.is_private, data.target);
+    addChatMessage(data.from, data.text, data.timestamp, isOutgoing, data.is_private, data.target, data.id);
 }
 
-function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all") {
+function createMessageElement(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all", msgId = null) {
     const msgEl = document.createElement("div");
     msgEl.className = `message ${isOutgoing ? "outgoing" : "incoming"} ${isPrivate ? "private-msg" : ""}`;
+    if (msgId) {
+        msgEl.dataset.msgId = msgId;
+    }
 
     const senderEl = document.createElement("div");
     senderEl.className = "message-sender";
@@ -370,8 +378,120 @@ function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, 
     msgEl.appendChild(senderEl);
     msgEl.appendChild(bubbleEl);
     msgEl.appendChild(timeEl);
+    return msgEl;
+}
+
+function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all", msgId = null) {
+    const msgEl = createMessageElement(sender, text, timestamp, isOutgoing, isPrivate, target, msgId);
     messagesDiv.appendChild(msgEl);
+    if (msgId && (oldestMessageId === null || msgId < oldestMessageId)) {
+        oldestMessageId = msgId;
+    }
     scrollToBottom();
+}
+
+async function loadOlderMessages() {
+    if (isLoadingHistory || !hasMoreHistory || !oldestMessageId || !isConnected) return;
+    isLoadingHistory = true;
+
+    const currentTarget = activeTarget;
+    const oldScrollHeight = messagesContainer.scrollHeight;
+    const oldScrollTop = messagesContainer.scrollTop;
+
+    try {
+        const res = await fetch("/api/chat/history", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                target: currentTarget,
+                before_id: oldestMessageId,
+                limit: 20,
+            }),
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+            oldestMessageId = data.messages[0].id;
+            hasMoreHistory = Boolean(data.has_more);
+
+            const fragment = document.createDocumentFragment();
+            for (const m of data.messages) {
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
+                fragment.appendChild(el);
+            }
+            const firstMsg = messagesDiv.querySelector(".message");
+            if (firstMsg) {
+                messagesDiv.insertBefore(fragment, firstMsg);
+            } else {
+                messagesDiv.prepend(fragment);
+            }
+
+            // Restore scroll position so user viewpoint does not jump
+            const heightAdded = messagesContainer.scrollHeight - oldScrollHeight;
+            messagesContainer.scrollTop = oldScrollTop + heightAdded;
+        } else {
+            hasMoreHistory = false;
+        }
+    } catch (err) {
+        console.warn("Load older messages error:", err);
+    } finally {
+        isLoadingHistory = false;
+    }
+}
+
+async function loadInitialChatHistory(target = "all") {
+    if (!isConnected) return;
+    oldestMessageId = null;
+    hasMoreHistory = true;
+
+    try {
+        const res = await fetch("/api/chat/history", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                target: target,
+                before_id: null,
+                limit: 20,
+            }),
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+            oldestMessageId = data.messages[0].id;
+            hasMoreHistory = Boolean(data.has_more);
+
+            messagesDiv.innerHTML = target === "all" ? `
+                <div class="system-message">
+                    <span>Welcome to StreamChat! You are in the general chat room.</span>
+                </div>
+            ` : `
+                <div class="system-message">
+                    <span>Private chat history with @${escapeHtml(target)}</span>
+                </div>
+            `;
+
+            for (const m of data.messages) {
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
+                messagesDiv.appendChild(el);
+            }
+            scrollToBottom();
+        }
+    } catch (err) {
+        console.warn("Load initial history error:", err);
+    }
+}
+
+// Infinite scroll listener for lazy loading older messages
+if (messagesContainer) {
+    messagesContainer.addEventListener("scroll", () => {
+        if (messagesContainer.scrollTop <= 30) {
+            loadOlderMessages();
+        }
+    });
 }
 
 function addSystemMessage(text) {
@@ -771,6 +891,29 @@ async function checkAndRestoreSession() {
         const res = await fetch("/api/status");
         if (!res.ok) return;
         const status = await res.json();
+
+        const lockedBanner = document.getElementById("port-locked-banner");
+        const lockedMessage = document.getElementById("port-locked-message");
+        const loginFormEl = document.getElementById("login-form");
+
+        if (status.port_locked) {
+            if (lockedBanner) {
+                lockedBanner.classList.remove("hidden");
+                if (lockedMessage) {
+                    lockedMessage.textContent = status.message || `Cổng này hiện đang được đăng nhập bởi tài khoản @${status.locked_by} trên một thiết bị khác.`;
+                }
+            }
+            if (loginFormEl) {
+                loginFormEl.classList.add("hidden");
+            }
+            chatScreen.classList.remove("active");
+            loginScreen.classList.add("active");
+            return;
+        } else {
+            if (lockedBanner) lockedBanner.classList.add("hidden");
+            if (loginFormEl) loginFormEl.classList.remove("hidden");
+        }
+
         if (status.authenticated && status.username) {
             const uname = status.username.trim().toLowerCase();
             currentUsername = uname;
@@ -826,19 +969,32 @@ async function restoreMessageHistory() {
     }
 }
 
-// Periodic user list synchronization every 5 seconds
+// Periodic user list synchronization and port lock check every 5 seconds
 setInterval(async () => {
-    if (isConnected && currentUsername) {
-        try {
-            const res = await fetch("/api/status");
-            if (res.ok) {
-                const data = await res.json();
-                if (data.users && Array.isArray(data.users)) {
-                    handleUserList({ users: data.users });
+    try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const lockedBanner = document.getElementById("port-locked-banner");
+        const lockedMessage = document.getElementById("port-locked-message");
+        const loginFormEl = document.getElementById("login-form");
+
+        if (!isConnected) {
+            if (data.port_locked) {
+                if (lockedBanner) {
+                    lockedBanner.classList.remove("hidden");
+                    if (lockedMessage) lockedMessage.textContent = data.message || `Cổng này đang có tài khoản @${data.locked_by} đăng nhập.`;
                 }
+                if (loginFormEl) loginFormEl.classList.add("hidden");
+            } else {
+                if (lockedBanner) lockedBanner.classList.add("hidden");
+                if (loginFormEl) loginFormEl.classList.remove("hidden");
             }
-        } catch (_) {}
-    }
+        } else if (currentUsername && data.users && Array.isArray(data.users)) {
+            handleUserList({ users: data.users });
+        }
+    } catch (_) {}
 }, 5000);
 
 // Automatically check session on page load / reload

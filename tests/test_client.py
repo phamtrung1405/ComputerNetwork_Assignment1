@@ -57,7 +57,9 @@ class ChatClientConnectTests(unittest.TestCase):
 class HttpLoginTimeoutTests(unittest.TestCase):
     def test_handshake_timeout_is_reported_without_waiting_for_auth(self) -> None:
         ui = HttpUI.__new__(HttpUI)
+        ui._port = 8080
         ui._client = Mock()
+        ui._client.is_authenticated = False
         ui._client.connect.return_value = False
         ui._send_json_response = Mock()
         client_socket = object()
@@ -74,6 +76,60 @@ class HttpLoginTimeoutTests(unittest.TestCase):
         self.assertEqual(args[1], 200)
         self.assertEqual(args[2]["status"], "error")
         self.assertIn("Authentication was not sent", args[2]["message"])
+
+
+class HttpUISessionLockTests(unittest.TestCase):
+    def test_status_reports_port_locked_for_unauthorized_browser(self) -> None:
+        ui = HttpUI.__new__(HttpUI)
+        ui._port = 8080
+        ui._active_session_token = "secret123"
+        ui._session_lock = Mock()
+        ui._session_lock.__enter__ = Mock()
+        ui._session_lock.__exit__ = Mock()
+        ui._client = Mock()
+        ui._client.is_authenticated = True
+        ui._client.username = "alice"
+        ui._client._running = True
+        ui._get_active_users = Mock(return_value=[])
+        ui._send_json_response = Mock()
+        sock = Mock()
+
+        # 1. Request from another browser (no cookie)
+        ui._handle_status(sock, headers={})
+        sock.close.assert_called_once()
+        args, _ = ui._send_json_response.call_args
+        self.assertEqual(args[1], 200)
+        self.assertFalse(args[2]["authenticated"])
+        self.assertTrue(args[2]["port_locked"])
+        self.assertEqual(args[2]["locked_by"], "alice")
+
+        # 2. Request from the owner browser (matching cookie)
+        sock.reset_mock()
+        ui._send_json_response.reset_mock()
+        ui._handle_status(sock, headers={"cookie": "streamchat_session=secret123"})
+        sock.close.assert_called_once()
+        args, _ = ui._send_json_response.call_args
+        self.assertEqual(args[1], 200)
+        self.assertTrue(args[2]["authenticated"])
+        self.assertFalse(args[2]["port_locked"])
+        self.assertEqual(args[2]["username"], "alice")
+
+    def test_login_rejected_when_port_already_authenticated(self) -> None:
+        ui = HttpUI.__new__(HttpUI)
+        ui._port = 8080
+        ui._active_session_token = "secret123"
+        ui._client = Mock()
+        ui._client.is_authenticated = True
+        ui._client.username = "alice"
+        ui._send_json_response = Mock()
+        sock = Mock()
+
+        ui._handle_login(sock, json.dumps({"username": "bob", "password": "123"}))
+        sock.close.assert_called_once()
+        args, _ = ui._send_json_response.call_args
+        self.assertEqual(args[1], 403)
+        self.assertTrue(args[2]["port_locked"])
+        self.assertIn("đang có tài khoản @alice", args[2]["message"])
 
 
 if __name__ == "__main__":

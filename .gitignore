@@ -58,3 +58,5 @@ tests/
 tests/*
 !tests/test_packet.py
 !tests/test_client.py
+docs/
+agent_output/

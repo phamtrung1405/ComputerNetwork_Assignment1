@@ -20,7 +20,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -40,9 +42,36 @@ from common.constants import (
     PKT_DATA,
 )
 from common.crypto import encrypt
-from server.database import db
+import server.database
+from server.database import UserDatabase, db
 from server.server import ChatServer
+import server.session
 from server.session import Session
+
+_temp_dir: str | None = None
+_orig_session_db = None
+_orig_database_db = None
+
+
+def setUpModule() -> None:
+    global _temp_dir, _orig_session_db, _orig_database_db
+    _temp_dir = tempfile.mkdtemp()
+    temp_db = UserDatabase(Path(_temp_dir) / "test_users.db")
+    _orig_session_db = server.session.db
+    _orig_database_db = server.database.db
+    server.session.db = temp_db
+    server.database.db = temp_db
+
+
+def tearDownModule() -> None:
+    global _temp_dir, _orig_session_db, _orig_database_db
+    if _orig_session_db is not None:
+        server.session.db = _orig_session_db
+    if _orig_database_db is not None:
+        server.database.db = _orig_database_db
+    if _temp_dir is not None:
+        shutil.rmtree(_temp_dir, ignore_errors=True)
+
 
 
 class MockConnection:

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import random
 import socket
 import tempfile
 import threading
@@ -73,6 +74,10 @@ class ChatClient:
 
         # Event queue for UI
         self.event_queue: queue.Queue[dict] = queue.Queue()
+
+        # Track history fetch requests
+        self._pending_history: dict[str, dict] = {}
+        self._history_lock: threading.Lock = threading.Lock()
 
         # Track file transfers
         self._file_transfers: dict[int, dict] = {}
@@ -142,6 +147,59 @@ class ChatClient:
             "text": text,
         }
         self._send_json(msg)
+
+    def fetch_history(
+        self,
+        target: str,
+        before_id: Optional[int] = None,
+        limit: int = 20,
+        timeout: float = 3.0,
+    ) -> dict:
+        """Fetch chat history from the server with cursor-based pagination.
+
+        Args:
+            target: "all" or specific username.
+            before_id: Message ID cursor to load messages before this ID.
+            limit: Number of messages to fetch (default 20).
+            timeout: Timeout in seconds waiting for server response.
+
+        Returns:
+            Dict containing success status, messages list, and has_more flag.
+        """
+        req_id = f"hist_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        event = threading.Event()
+
+        with self._history_lock:
+            self._pending_history[req_id] = {
+                "event": event,
+                "data": None,
+            }
+
+        req_msg = {
+            "type": "FETCH_HISTORY",
+            "req_id": req_id,
+            "target": target,
+            "before_id": before_id,
+            "limit": limit,
+        }
+        self._send_json(req_msg)
+
+        signaled = event.wait(timeout=timeout)
+        with self._history_lock:
+            pending = self._pending_history.pop(req_id, None)
+
+        if signaled and pending and pending.get("data"):
+            data = pending["data"]
+            return {
+                "success": True,
+                "messages": data.get("messages", []),
+                "has_more": data.get("has_more", False),
+            }
+        return {
+            "success": False,
+            "messages": [],
+            "has_more": False,
+        }
 
     # ----------------------- File Transfer -----------------------
 
@@ -344,6 +402,14 @@ class ChatClient:
             )
         elif msg.get("type") == "USER_LIST":
             self.online_users = list(msg.get("users", []))
+        elif msg.get("type") == "HISTORY_RESP":
+            req_id = msg.get("req_id")
+            with self._history_lock:
+                pending = self._pending_history.get(req_id)
+                if pending:
+                    pending["data"] = msg
+                    pending["event"].set()
+            return  # Consumed synchronously by fetch_history, don't forward to UI SSE queue
         elif msg.get("type") in ("FILE", "FILE_READY"):
             sid = msg.get("stream_id")
             fname = msg.get("filename", "")

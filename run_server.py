@@ -37,8 +37,8 @@ def main() -> None:
     parser.add_argument(
         "--host",
         type=str,
-        default=DEFAULT_SERVER_HOST,
-        help=f"Listening IP address (default: {DEFAULT_SERVER_HOST})",
+        default="0.0.0.0",
+        help="Listening IP address (default: 0.0.0.0 to accept LAN connections)",
     )
     parser.add_argument(
         "--port",

@@ -93,7 +93,12 @@ class HttpUI:
         with self._session_lock:
             if not self._active_session_token:
                 return False
-            token = self._extract_cookie(headers, "streamchat_session")
+            # Check port-isolated cookie first to avoid cross-port collisions in the same browser,
+            # then fallback to generic streamchat_session for backward compatibility.
+            port = getattr(self, "_port", 8080)
+            token = self._extract_cookie(headers, f"streamchat_session_{port}")
+            if not token:
+                token = self._extract_cookie(headers, "streamchat_session")
             return bool(token and hmac.compare_digest(token, self._active_session_token))
 
     def set_client(self, client: ChatClient) -> None:
@@ -285,8 +290,11 @@ class HttpUI:
         """Log out the attached UDP client and return an HTTP status response."""
         with self._session_lock:
             self._active_session_token = None
+        port = getattr(self, "_port", 8080)
         extra_headers = {
             "Set-Cookie": [
+                f"streamchat_user_{port}=; Path=/; Max-Age=0; SameSite=Lax",
+                f"streamchat_session_{port}=; Path=/; Max-Age=0; SameSite=Lax",
                 "streamchat_user=; Path=/; Max-Age=0; SameSite=Lax",
                 "streamchat_session=; Path=/; Max-Age=0; SameSite=Lax",
             ],
@@ -524,8 +532,11 @@ class HttpUI:
                         "username": username,
                         "message": f"Successfully logged in as @{username}!",
                     }
+                    port = getattr(self, "_port", 8080)
                     extra_headers = {
                         "Set-Cookie": [
+                            f"streamchat_user_{port}={quote(username)}; Path=/; Max-Age=86400; SameSite=Lax",
+                            f"streamchat_session_{port}={session_token}; Path=/; Max-Age=86400; SameSite=Lax",
                             f"streamchat_user={quote(username)}; Path=/; Max-Age=86400; SameSite=Lax",
                             f"streamchat_session={session_token}; Path=/; Max-Age=86400; SameSite=Lax",
                         ],

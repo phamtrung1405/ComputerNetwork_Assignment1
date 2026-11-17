@@ -227,6 +227,8 @@ function handleKicked(data) {
         eventSource.close();
         eventSource = null;
     }
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
     document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     isConnected = false;
     currentUsername = "";
@@ -248,6 +250,8 @@ function handleKicked(data) {
 
 function handleAuthSuccess(data) {
     currentUsername = (data.username || currentUsername).trim().toLowerCase();
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=${encodeURIComponent(currentUsername)}; path=/; max-age=86400; SameSite=Lax`;
     document.cookie = `streamchat_user=${encodeURIComponent(currentUsername)}; path=/; max-age=86400; SameSite=Lax`;
     displayUsername.textContent = currentUsername;
     userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
@@ -832,6 +836,8 @@ btnDisconnect.addEventListener("click", () => {
     if (currentUsername) {
         fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
     }
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
     document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     if (eventSource) {
         eventSource.close();
@@ -885,6 +891,11 @@ if (loginThemeToggle) {
 // SESSION COOKIE & MESSAGE RESTORATION ON RELOAD
 // ═══════════════════════════════════════════════
 
+function getPortSpecificKey(baseKey) {
+    const port = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+    return `${baseKey}_${port}`;
+}
+
 function getCookie(name) {
     const match = document.cookie.match(new RegExp("(^|;\\s*)" + name + "=([^;]*)"));
     return match ? decodeURIComponent(match[2]) : null;
@@ -931,8 +942,10 @@ async function checkAndRestoreSession() {
             initSSE(uname);
             await restoreMessageHistory();
         } else {
-            const savedCookie = getCookie("streamchat_user");
+            const userKey = getPortSpecificKey("streamchat_user");
+            const savedCookie = getCookie(userKey) || getCookie("streamchat_user");
             if (savedCookie) {
+                document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
                 document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
             }
         }

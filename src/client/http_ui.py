@@ -891,9 +891,19 @@ class HttpUI:
         if stream_id_raw.isdigit() and self._client is not None:
             file_tuple = self._client.get_download_file(int(stream_id_raw))
 
+        if not file_tuple and filename_raw and self._client is not None:
+            safe_name = os.path.basename(filename_raw)
+            if hasattr(self._client, "_download_dir") and os.path.isdir(self._client._download_dir):
+                for fname in os.listdir(self._client._download_dir):
+                    if fname.endswith(f"_{safe_name}") or fname == safe_name:
+                        full_p = os.path.join(self._client._download_dir, fname)
+                        if os.path.isfile(full_p):
+                            file_tuple = (safe_name, full_p)
+                            break
+
         if not file_tuple:
             self._send_response(
-                client_socket, 404, "text/plain", b"File not found or transfer incomplete."
+                client_socket, 404, "text/plain", b"File not found on this device (stored on sender's local device)."
             )
             client_socket.close()
             return

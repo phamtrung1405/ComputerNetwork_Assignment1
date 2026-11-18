@@ -430,6 +430,25 @@ class Session:
             "timestamp": time.time(),
         }
 
+        # Lưu thông tin file vào lịch sử tin nhắn SQLite (không lưu nội dung file trên server)
+        try:
+            file_meta_text = json.dumps({
+                "type": "FILE",
+                "filename": filename.strip(),
+                "size": size,
+                "sha256": sha256.lower(),
+                "stream_id": stream_id,
+                "download_url": download_url,
+            }, ensure_ascii=False)
+            db.save_message(
+                sender=self.username,
+                target=target,
+                text=file_meta_text,
+                timestamp=file_info["timestamp"],
+            )
+        except Exception as exc:
+            logger.warning("Failed to save file metadata to database: %s", exc)
+
         if target == "all":
             self.route_broadcast(file_info)
             if size > 0:

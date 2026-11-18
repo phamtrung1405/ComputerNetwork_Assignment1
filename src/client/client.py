@@ -309,9 +309,8 @@ class ChatClient:
                                 "progress": pct,
                             })
 
-                    # Backpressure & Flow Control:
-                    # Ngăn chặn việc nạp quá tải hàng nghìn gói vào RAM khi tốc độ mạng chậm hơn tốc độ đọc đĩa
-                    while len(self._connection._tx_queue) > 64 or not self._connection.reliability.can_send():
+                    # Backpressure: chỉ đệm tối đa 128 gói trong hàng đợi gửi (tránh đầy RAM)
+                    while len(self._connection._tx_queue) > 128:
                         if not self._running or self._connection.closed:
                             raise OSError("Connection closed during file transfer")
                         time.sleep(0.002)
@@ -552,6 +551,21 @@ class ChatClient:
             file_info["download_url"] = dl_url
 
             self.event_queue.put({
+                "type": "FILE_PROGRESS",
+                "stream_id": stream_id,
+                "filename": file_info["filename"],
+                "size": file_info["size"],
+                "received": file_info["size"],
+                "progress": 100,
+            })
+            self.event_queue.put({
+                "type": "FILE_COMPLETE",
+                "stream_id": stream_id,
+                "filename": file_info["filename"],
+                "size": file_info["size"],
+                "download_url": dl_url,
+            })
+            self.event_queue.put({
                 "type": "FILE_READY",
                 "stream_id": stream_id,
                 "filename": file_info["filename"],
@@ -574,6 +588,17 @@ class ChatClient:
             fpath = info.get("file_path")
             if fpath and os.path.isfile(fpath):
                 return (info.get("filename", os.path.basename(fpath)), fpath)
+
+        # On-disk fallback for files already received (survives client/server restarts!)
+        prefix = f"{stream_id}_"
+        if hasattr(self, "_download_dir") and os.path.isdir(self._download_dir):
+            for fname in os.listdir(self._download_dir):
+                if fname.startswith(prefix):
+                    full_p = os.path.join(self._download_dir, fname)
+                    if os.path.isfile(full_p):
+                        real_name = fname[len(prefix):]
+                        return (real_name, full_p)
+
         return None
 
     # ----------------------- Utilities -----------------------

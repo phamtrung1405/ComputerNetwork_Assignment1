@@ -1,6 +1,6 @@
 # STREAMCHAT — Hợp đồng tích hợp M1 (`connection.py`) ↔ M2 (`crypto` / `reliability` / `stream`)
 
-**Trạng thái:** `connection.py` đã được vá theo K1–K11 (2026-11-08, theo yêu cầu của Phước); chờ M1 (Trung) xác nhận. K2/K3 đã do M1 làm trước. Xem `docs/handoff/M1/README.md`.
+**Trạng thái (2026-11-13):** `connection.py` trong repository có `INTEGRATION_CONTRACT_VERSION = 1` và đã tích hợp các quy tắc K1–K11. `tests/test_connection_loopback.py` xác nhận hợp đồng bằng socket mô phỏng; điều này không xác nhận full-stack qua HTTP UI và UDP server.
 **Căn cứ:** `docs/audits/M2_AUDIT_REPORT.md` (các mã C-1…H-6), ADR-005, ADR-006, ADR-010, ADR-011, ADR-012.
 **Phạm vi sửa:** chỉ `src/transport/connection.py` (M1). API M2 đã sẵn sàng; không cần đổi chữ ký hàm nào.
 
@@ -52,4 +52,4 @@ Mạng giả, 2 MB, độ trễ ≈ 0 (cùng một process; số liệu chỉ đ
 
 ## 4. Tiêu chí chấp nhận
 
-`tests/test_connection_loopback.py` (xem file) phải xanh sau khi M1 áp dụng K1–K11: nonce không trùng hai chiều, AAD bị sửa bị từ chối, DATA thô bị loại, gói hỏng không ACK, ACK lỗi không văng ngoại lệ, nhiều message cùng lúc đều tới app, `in_flight ≤ int(cwnd)`, và truyền file 10 MB có SHA-256 khớp ở mọi kịch bản mất/đảo/trùng.
+`tests/test_connection_loopback.py` hiện xanh trên repository và kiểm tra: nonce độc lập hai chiều, AAD bị sửa bị từ chối, DATA thô bị loại sau handshake, gói hỏng không ACK, ACK lỗi không làm văng ngoại lệ, nhiều message tới app, `in_flight` bị giới hạn bởi cửa sổ tắc nghẽn, và truyền file có SHA-256 khớp trong các kịch bản mô phỏng. Chạy lại bộ test này sau mọi thay đổi hợp đồng. Kiểm thử full-stack qua HTTP UI và UDP server là một gate riêng.

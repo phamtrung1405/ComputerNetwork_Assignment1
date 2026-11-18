@@ -53,6 +53,40 @@ from transport.stream import Stream, SAFE_MAX_APP_PAYLOAD
 class TestEndpointKeyAgreement(unittest.TestCase):
     """Yêu cầu 1: Hai endpoint hoàn tất bắt tay và dẫn xuất cùng một khóa phiên đối xứng."""
 
+    def test_connection_dispatches_all_messages_completed_after_reordering(self) -> None:
+        """A missing earlier packet may unlock multiple complete messages at once."""
+        sender_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sender_sock.bind(("127.0.0.1", 0))
+        receiver_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        receiver_sock.bind(("127.0.0.1", 0))
+        received: list[tuple[int, bytes]] = []
+
+        try:
+            receiver = Connection(
+                sock=receiver_sock,
+                remote_addr=sender_sock.getsockname(),
+                conn_id=1002,
+                is_server=True,
+                on_app_message=lambda stream_id, data: received.append((stream_id, data)),
+            )
+
+            for seq_num, offset, data in ((1, 1, b"B"), (0, 0, b"A")):
+                datagram = packet.pack(
+                    msg_type=PKT_DATA,
+                    conn_id=1002,
+                    seq_num=seq_num,
+                    flags=FLAG_EOM,
+                    stream_id=1,
+                    offset=offset,
+                    payload=data,
+                )
+                receiver.receive_packet(datagram)
+
+            self.assertEqual(received, [(1, b"A"), (1, b"B")])
+        finally:
+            sender_sock.close()
+            receiver_sock.close()
+
     def test_loopback_udp_handshake_derives_identical_session_key(self) -> None:
         """Alice (Client) và Bob (Server) trao đổi HELLO/HELLO_ACK qua UDP loopback thực tế."""
         sock_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

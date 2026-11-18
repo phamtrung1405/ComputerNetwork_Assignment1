@@ -60,6 +60,9 @@ let isConnected = false;
 let activeTarget = "all";  // "all" or specific username
 let eventSource = null;
 let selectedFile = null;
+let oldestMessageId = null;
+let isLoadingHistory = false;
+let hasMoreHistory = true;
 
 // ═══════════════════════════════════════════════
 // UTILITIES
@@ -208,6 +211,9 @@ function handleServerEvent(data) {
         case "FILE_READY":
             handleFileReady(data);
             break;
+        case "FILE_PROGRESS":
+            handleFileProgress(data);
+            break;
         case "KICKED":
             handleKicked(data);
             break;
@@ -224,6 +230,8 @@ function handleKicked(data) {
         eventSource.close();
         eventSource = null;
     }
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
     document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     isConnected = false;
     currentUsername = "";
@@ -245,6 +253,8 @@ function handleKicked(data) {
 
 function handleAuthSuccess(data) {
     currentUsername = (data.username || currentUsername).trim().toLowerCase();
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=${encodeURIComponent(currentUsername)}; path=/; max-age=86400; SameSite=Lax`;
     document.cookie = `streamchat_user=${encodeURIComponent(currentUsername)}; path=/; max-age=86400; SameSite=Lax`;
     displayUsername.textContent = currentUsername;
     userAvatar.textContent = currentUsername.charAt(0).toUpperCase();
@@ -259,6 +269,7 @@ function handleAuthSuccess(data) {
     msgInput.focus();
 
     addSystemMessage(data.message || `Successfully logged in as @${currentUsername}!`);
+    loadInitialChatHistory("all");
 }
 
 function handleAuthResponse(data) {
@@ -324,6 +335,7 @@ function selectChatTarget(target) {
         btn.classList.toggle("active", btn.dataset.username === target);
     });
 
+    loadInitialChatHistory(target);
     msgInput.focus();
 }
 
@@ -340,12 +352,15 @@ function handleChatMessage(data) {
         return;
     }
     const isOutgoing = false;
-    addChatMessage(data.from, data.text, data.timestamp, isOutgoing, data.is_private, data.target);
+    addChatMessage(data.from, data.text, data.timestamp, isOutgoing, data.is_private, data.target, data.id);
 }
 
-function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all") {
+function createMessageElement(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all", msgId = null) {
     const msgEl = document.createElement("div");
     msgEl.className = `message ${isOutgoing ? "outgoing" : "incoming"} ${isPrivate ? "private-msg" : ""}`;
+    if (msgId) {
+        msgEl.dataset.msgId = msgId;
+    }
 
     const senderEl = document.createElement("div");
     senderEl.className = "message-sender";
@@ -370,8 +385,120 @@ function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, 
     msgEl.appendChild(senderEl);
     msgEl.appendChild(bubbleEl);
     msgEl.appendChild(timeEl);
+    return msgEl;
+}
+
+function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all", msgId = null) {
+    const msgEl = createMessageElement(sender, text, timestamp, isOutgoing, isPrivate, target, msgId);
     messagesDiv.appendChild(msgEl);
+    if (msgId && (oldestMessageId === null || msgId < oldestMessageId)) {
+        oldestMessageId = msgId;
+    }
     scrollToBottom();
+}
+
+async function loadOlderMessages() {
+    if (isLoadingHistory || !hasMoreHistory || !oldestMessageId || !isConnected) return;
+    isLoadingHistory = true;
+
+    const currentTarget = activeTarget;
+    const oldScrollHeight = messagesContainer.scrollHeight;
+    const oldScrollTop = messagesContainer.scrollTop;
+
+    try {
+        const res = await fetch("/api/chat/history", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                target: currentTarget,
+                before_id: oldestMessageId,
+                limit: 20,
+            }),
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+            oldestMessageId = data.messages[0].id;
+            hasMoreHistory = Boolean(data.has_more);
+
+            const fragment = document.createDocumentFragment();
+            for (const m of data.messages) {
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
+                fragment.appendChild(el);
+            }
+            const firstMsg = messagesDiv.querySelector(".message");
+            if (firstMsg) {
+                messagesDiv.insertBefore(fragment, firstMsg);
+            } else {
+                messagesDiv.prepend(fragment);
+            }
+
+            // Restore scroll position so user viewpoint does not jump
+            const heightAdded = messagesContainer.scrollHeight - oldScrollHeight;
+            messagesContainer.scrollTop = oldScrollTop + heightAdded;
+        } else {
+            hasMoreHistory = false;
+        }
+    } catch (err) {
+        console.warn("Load older messages error:", err);
+    } finally {
+        isLoadingHistory = false;
+    }
+}
+
+async function loadInitialChatHistory(target = "all") {
+    if (!isConnected) return;
+    oldestMessageId = null;
+    hasMoreHistory = true;
+
+    try {
+        const res = await fetch("/api/chat/history", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                target: target,
+                before_id: null,
+                limit: 20,
+            }),
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+            oldestMessageId = data.messages[0].id;
+            hasMoreHistory = Boolean(data.has_more);
+
+            messagesDiv.innerHTML = target === "all" ? `
+                <div class="system-message">
+                    <span>Welcome to StreamChat! You are in the general chat room.</span>
+                </div>
+            ` : `
+                <div class="system-message">
+                    <span>Private chat history with @${escapeHtml(target)}</span>
+                </div>
+            `;
+
+            for (const m of data.messages) {
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
+                messagesDiv.appendChild(el);
+            }
+            scrollToBottom();
+        }
+    } catch (err) {
+        console.warn("Load initial history error:", err);
+    }
+}
+
+// Infinite scroll listener for lazy loading older messages
+if (messagesContainer) {
+    messagesContainer.addEventListener("scroll", () => {
+        if (messagesContainer.scrollTop <= 30) {
+            loadOlderMessages();
+        }
+    });
 }
 
 function addSystemMessage(text) {
@@ -445,9 +572,13 @@ function handleFileReady(data) {
     const isTarget = data.target === "all" || (data.target || "").toLowerCase() === myUser || isOutgoing;
     if (!isTarget) return;
 
-    // Check if file card already exists to avoid duplicate entries and update download URL
-    const existing = (data.stream_id && document.querySelector(`.message[data-stream-id="${data.stream_id}"]`)) ||
-                     document.querySelector(`.message[data-filename="${encodeURIComponent(data.filename)}"]`);
+    // Check if file card already exists to avoid duplicate entries and update download URL.
+    // Match both stream_id AND direction (outgoing vs incoming) so incoming file cards
+    // from other users never collide with the sender's outgoing file cards.
+    const dirClass = isOutgoing ? "outgoing" : "incoming";
+    const existing = data.stream_id
+        ? document.querySelector(`.message.${dirClass}[data-stream-id="${data.stream_id}"]`)
+        : null;
     if (existing) {
         if (data.download_url) {
             const dlBtn = existing.querySelector(".btn-download-file");
@@ -537,6 +668,33 @@ function addFileTransferSidebar(streamId, filename, size, downloadUrl) {
         <div class="transfer-status" style="display:flex; justify-content:space-between; align-items:center;">
             <span>${formatBytes(size)} — ✅ Complete</span>
             <a href="${downloadUrl}" style="color:var(--accent-primary); font-weight:600; text-decoration:none;" download>Download</a>
+        </div>
+    `;
+}
+
+function handleFileProgress(data) {
+    if (!data || !data.stream_id) return;
+    const emptyState = fileTransfersDiv.querySelector(".empty-state");
+    if (emptyState) emptyState.remove();
+
+    let item = document.getElementById(`transfer-${data.stream_id}`);
+    if (!item) {
+        item = document.createElement("div");
+        item.className = "transfer-item";
+        item.id = `transfer-${data.stream_id}`;
+        fileTransfersDiv.prepend(item);
+    }
+
+    const pct = data.progress !== undefined ? data.progress : Math.round(((data.received || 0) / (data.size || 1)) * 100);
+    const bytesText = data.received !== undefined ? `${formatBytes(data.received)} / ${formatBytes(data.size)}` : `${formatBytes(data.size)}`;
+    item.innerHTML = `
+        <span class="transfer-name" title="${escapeHtml(data.filename || "file")}">${escapeHtml(data.filename || "file")}</span>
+        <div class="progress-bar-bg">
+            <div class="progress-bar-fill" style="width: ${pct}%"></div>
+        </div>
+        <div class="transfer-status" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>${bytesText} (${pct}%)</span>
+            <span style="color:var(--accent-primary); font-size:11px;">Transferring...</span>
         </div>
     `;
 }
@@ -678,7 +836,7 @@ fileSendBtn.addEventListener("click", () => {
 
                 setTimeout(() => {
                     closeFileDialog();
-                }, 1200);
+                }, 350);
             } else {
                 addSystemMessage("⚠️ Failed to send file: " + (result.message || "Server error"));
                 fileSendBtn.disabled = false;
@@ -708,6 +866,8 @@ btnDisconnect.addEventListener("click", () => {
     if (currentUsername) {
         fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
     }
+    const userKey = getPortSpecificKey("streamchat_user");
+    document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
     document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
     if (eventSource) {
         eventSource.close();
@@ -761,6 +921,11 @@ if (loginThemeToggle) {
 // SESSION COOKIE & MESSAGE RESTORATION ON RELOAD
 // ═══════════════════════════════════════════════
 
+function getPortSpecificKey(baseKey) {
+    const port = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+    return `${baseKey}_${port}`;
+}
+
 function getCookie(name) {
     const match = document.cookie.match(new RegExp("(^|;\\s*)" + name + "=([^;]*)"));
     return match ? decodeURIComponent(match[2]) : null;
@@ -771,6 +936,29 @@ async function checkAndRestoreSession() {
         const res = await fetch("/api/status");
         if (!res.ok) return;
         const status = await res.json();
+
+        const lockedBanner = document.getElementById("port-locked-banner");
+        const lockedMessage = document.getElementById("port-locked-message");
+        const loginFormEl = document.getElementById("login-form");
+
+        if (status.port_locked) {
+            if (lockedBanner) {
+                lockedBanner.classList.remove("hidden");
+                if (lockedMessage) {
+                    lockedMessage.textContent = status.message || `Cổng này hiện đang được đăng nhập bởi tài khoản @${status.locked_by} trên một thiết bị khác.`;
+                }
+            }
+            if (loginFormEl) {
+                loginFormEl.classList.add("hidden");
+            }
+            chatScreen.classList.remove("active");
+            loginScreen.classList.add("active");
+            return;
+        } else {
+            if (lockedBanner) lockedBanner.classList.add("hidden");
+            if (loginFormEl) loginFormEl.classList.remove("hidden");
+        }
+
         if (status.authenticated && status.username) {
             const uname = status.username.trim().toLowerCase();
             currentUsername = uname;
@@ -784,8 +972,10 @@ async function checkAndRestoreSession() {
             initSSE(uname);
             await restoreMessageHistory();
         } else {
-            const savedCookie = getCookie("streamchat_user");
+            const userKey = getPortSpecificKey("streamchat_user");
+            const savedCookie = getCookie(userKey) || getCookie("streamchat_user");
             if (savedCookie) {
+                document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
                 document.cookie = "streamchat_user=; path=/; max-age=0; SameSite=Lax";
             }
         }
@@ -826,19 +1016,32 @@ async function restoreMessageHistory() {
     }
 }
 
-// Periodic user list synchronization every 5 seconds
+// Periodic user list synchronization and port lock check every 5 seconds
 setInterval(async () => {
-    if (isConnected && currentUsername) {
-        try {
-            const res = await fetch("/api/status");
-            if (res.ok) {
-                const data = await res.json();
-                if (data.users && Array.isArray(data.users)) {
-                    handleUserList({ users: data.users });
+    try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const lockedBanner = document.getElementById("port-locked-banner");
+        const lockedMessage = document.getElementById("port-locked-message");
+        const loginFormEl = document.getElementById("login-form");
+
+        if (!isConnected) {
+            if (data.port_locked) {
+                if (lockedBanner) {
+                    lockedBanner.classList.remove("hidden");
+                    if (lockedMessage) lockedMessage.textContent = data.message || `Cổng này đang có tài khoản @${data.locked_by} đăng nhập.`;
                 }
+                if (loginFormEl) loginFormEl.classList.add("hidden");
+            } else {
+                if (lockedBanner) lockedBanner.classList.add("hidden");
+                if (loginFormEl) loginFormEl.classList.remove("hidden");
             }
-        } catch (_) {}
-    }
+        } else if (currentUsername && data.users && Array.isArray(data.users)) {
+            handleUserList({ users: data.users });
+        }
+    } catch (_) {}
 }, 5000);
 
 // Automatically check session on page load / reload

@@ -21,11 +21,11 @@ from common.constants import (
 # Kích thước chunk an toàn tối đa cho ứng dụng (tính cả 16B GCM tag và 22B header)
 SAFE_MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE - GCM_TAG_SIZE  # 1362 bytes
 
-# Dung lượng bộ đệm nhận tối đa mặc định cho mỗi stream để ngăn ngừa tấn công DoS tràn bộ nhớ
-DEFAULT_MAX_STREAM_BUFFER_SIZE: int = 16 * 1024 * 1024  # 16 MB
+# Dung lượng bộ đệm nhận tối đa mặc định cho mỗi stream để hỗ trợ truyền file lớn và ngăn ngừa tấn công DoS tràn bộ nhớ
+DEFAULT_MAX_STREAM_BUFFER_SIZE: int = 128 * 1024 * 1024  # 128 MB
 
 # Số chunk rời rạc tối đa trong bộ đệm nhận (giới hạn overhead bộ nhớ khi chunk rất nhỏ)
-DEFAULT_MAX_BUFFERED_CHUNKS: int = 65536
+DEFAULT_MAX_BUFFERED_CHUNKS: int = 131072
 
 
 class Stream:

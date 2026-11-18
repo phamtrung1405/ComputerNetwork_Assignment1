@@ -131,6 +131,8 @@ class Session:
             self._process_logout()
         elif msg_type == "MSG":
             self._process_msg(msg)
+        elif msg_type == "FETCH_HISTORY":
+            self._process_fetch_history(msg)
         elif msg_type in ("USER_LIST_REQ", "GET_USERS"):
             users = self._get_users_fn() if self._get_users_fn else ([self.username] if self.username else [])
             self._send_app_message({
@@ -288,10 +290,68 @@ class Session:
             "timestamp": time.time(),
         }
 
+        # Persist message to SQLite
+        try:
+            msg_id = db.save_message(
+                sender=self.username,
+                target=target,
+                text=text,
+                timestamp=chat_msg["timestamp"],
+            )
+            chat_msg["id"] = msg_id
+        except Exception as exc:
+            logger.warning("Failed to save message to database: %s", exc)
+
         if target == "all":
             self.route_broadcast(chat_msg)
         else:
             self.route_unicast(target, chat_msg)
+
+    def _process_fetch_history(self, msg: dict) -> None:
+        """Handle FETCH_HISTORY request and return paginated chat history."""
+        if not self.authenticated or not self.username:
+            self._send_app_message({
+                "type": "ERROR",
+                "message": "You are not logged in.",
+            })
+            return
+
+        req_id: str = str(msg.get("req_id", ""))
+        target: str = str(msg.get("target", "all")).strip().lower()
+        before_id = msg.get("before_id")
+        if before_id is not None:
+            try:
+                before_id = int(before_id)
+            except (ValueError, TypeError):
+                before_id = None
+
+        limit: int = 20
+        try:
+            limit = max(1, min(100, int(msg.get("limit", 20))))
+        except (ValueError, TypeError):
+            limit = 20
+
+        user1: str = self.username
+        user2: str = target if target != "all" else ""
+        try:
+            messages, has_more = db.get_chat_history(
+                target=target,
+                user1=user1,
+                user2=user2,
+                before_id=before_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.error("Error querying chat history: %s", exc)
+            messages, has_more = [], False
+
+        self._send_app_message({
+            "type": "HISTORY_RESP",
+            "req_id": req_id,
+            "target": target,
+            "messages": messages,
+            "has_more": has_more,
+        })
 
     # ----------------------- File Transfer -----------------------
 

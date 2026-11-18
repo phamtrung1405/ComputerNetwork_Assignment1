@@ -45,6 +45,14 @@
                 <h1>StreamChat</h1>
                 <p class="login-subtitle">Distributed Streaming Collaboration</p>
             </div>
+            <div id="port-locked-banner" class="port-locked-banner hidden">
+                <div class="locked-icon">🔒</div>
+                <h3>Cổng này đã có người đăng nhập</h3>
+                <p id="port-locked-message">Cổng này hiện đang được sử dụng bởi một tài khoản khác.</p>
+                <div class="port-locked-hint">
+                    <p>Mỗi tài khoản cần chạy một cổng riêng. Vui lòng mở terminal và chạy: <code>python run_client.py --http-port &lt;port_khác&gt;</code></p>
+                </div>
+            </div>
             <form id="login-form" autocomplete="off">
                 <div class="input-group">
                     <label for="login-username">Username</label>

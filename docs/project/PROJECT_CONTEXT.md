@@ -129,31 +129,27 @@ Header format string: `!BIIBHIHI` (defined in [`src/common/packet.py`](file:///h
 
 ---
 
-## 6. Current Verified Project State
+## 6. Current Verified Project State (2026-11-13)
 
-- **Branch Status:** On branch `main` at commit `ad9b95f`. Working tree is clean.
-- **Architectural Disconnect:**
-  - On `main`, `web_server.py` runs on TCP 8080 and handles login, chat, and files directly over HTTP REST and SSE. The entire UDP stack (`connection.py`, `reliability.py`, `stream.py`, `client.py`) is bypassed by the browser UI.
-  - On remote branch `origin/membau` (commit `7d348b7`), Bảo attempted to revert back to pure UDP by making `http_ui.py` bridge between Web UI and `ChatClient`. This branch is unmerged.
-- **Test Suite Status:** **0% automated tests.** No unit tests or integration test scripts currently exist in the repository.
-- **Compilation/Syntax:** Verified clean across all Python files using `python run_all.py --check`.
+- `run_server.py` starts the UDP `ChatServer`; the browser UI is served by each client's local `http_ui.py`. `src/server/web_server.py` remains a legacy module and is not the active server entry point.
+- `Connection.INTEGRATION_CONTRACT_VERSION` is `1`. The M1↔M2 integration contract is implemented and covered by `tests/test_connection_loopback.py` using simulated sockets.
+- The repository has unit and integration tests under `tests/`. The latest full-suite result is recorded in `docs/project/PROGRESS.md`.
+- `python run_all.py --check` passes. Run the tests with the project virtual environment so `cryptography` is available.
+- The browser/client/real UDP-server end-to-end gate has not been verified; simulated transport tests do not establish that the full UI flow works.
 
 ---
 
-## 7. Known Critical Bugs & Blockers
+## 7. Current Known Gaps & Follow-ups
 
-> **Cập nhật 2026-11-08:** các lỗi 2, 3, 4 (phía `stream.py`/`reliability.py`) và nonce/AAD ở mức module `crypto.py` đã được M2 sửa và có test. Lỗi 1 và 5 **vẫn còn trên đường chạy thật** vì `connection.py` chưa dùng API M2; xem `docs/audits/M2_AUDIT_REPORT.md` và `docs/project/M1_M2_INTEGRATION_CONTRACT.md`. Mục 6 ("0% automated tests") cũng đã lỗi thời: hiện có 113 test.
+The following are current observations, not the historical M2 audit findings:
 
-1. **[CRITICAL] Nonce Reuse in AES-GCM (`crypto.py` + `connection.py`):**
-   Client and Server share the same `session_key` and both derive the 12-byte nonce from `seq_num` starting from 0. The first packet in each direction shares the identical key and nonce, destroying AES-GCM security.
-2. **[CRITICAL] Buffer Wipe Data Loss (`stream.py`):**
-   `_try_assemble()` calls `self._recv_buffer.clear()` upon completing an assembly. Any out-of-order chunks belonging to subsequent messages already in the buffer are deleted.
-3. **[CRITICAL] Duplicate Chunk Deadlock (`stream.py`):**
-   Retransmitted duplicate chunks with `offset < _expected_offset` cause `sorted_offsets[0] != current` to trigger, permanently returning `None` and deadlocking the stream.
-4. **[HIGH] CUBIC Multi-Loss Window Collapse (`reliability.py`):**
-   When multiple packets expire in a single tick, `update_cwnd(is_loss=True)` is called once per lost packet, exponentially slashing `cwnd` down to the minimum window.
-5. **[HIGH] Missing Flow Control Enforcement (`connection.py`):**
-   `send_packet()` never queries `reliability.can_send()`, blasting UDP packets directly to the socket regardless of congestion window state.
+1. **Unauthenticated handshake:** X25519 public keys in HELLO/HELLO_ACK are not signed or pinned, so the handshake does not authenticate server identity.
+2. **Replay and control packets:** there is no receive-side replay window; ACK, heartbeat, and close packets are not authenticated.
+3. **Password handling:** the transmitted SHA-256 password hash is reusable as a credential and is not a salted slow hash.
+4. **Full-stack evidence:** test two actual browser clients through the local HTTP/SSE bridges and the UDP server, including file hash verification.
+5. **Protocol constants:** `PROTOCOL_MAGIC` is reserved but not sent or checked. `HEADER_FORMAT` and `HEADER_STRUCT_FMT` now share the 22-byte format used by `packet.py`.
+6. **Parser validation:** `packet.unpack()` checks for a complete header but does not reject a payload length that disagrees with the datagram length.
+7. **Queue/resource limits:** the Connection transmit queue is unbounded; decide whether to add back-pressure or a cap.
 
 ---
 

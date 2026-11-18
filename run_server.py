@@ -27,6 +27,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     except Exception:
         pass
 
+from common.logtee import enable_log_tee
+
+enable_log_tee()  # mirror all print() output into log.txt
+
 from common.constants import DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT
 from server.server import ChatServer
 
@@ -37,8 +41,8 @@ def main() -> None:
     parser.add_argument(
         "--host",
         type=str,
-        default=DEFAULT_SERVER_HOST,
-        help=f"Listening IP address (default: {DEFAULT_SERVER_HOST})",
+        default="0.0.0.0",
+        help="Listening IP address (default: 0.0.0.0 to accept LAN connections)",
     )
     parser.add_argument(
         "--port",

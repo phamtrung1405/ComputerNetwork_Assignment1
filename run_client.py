@@ -31,6 +31,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     except Exception:
         pass
 
+from common.logtee import enable_log_tee
+
+enable_log_tee()  # mirror all print() output into log.txt
+
 from common.constants import (
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
@@ -45,11 +49,21 @@ def find_available_port(start_port: int, max_attempts: int = 50) -> int:
     for p in range(start_port, start_port + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.bind(("127.0.0.1", p))
+                s.bind(("0.0.0.0", p))
                 return p
             except OSError:
                 continue
     return start_port
+
+
+def get_lan_ip() -> str:
+    """Detect primary LAN IP address."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
 
 
 def main() -> None:
@@ -86,11 +100,14 @@ def main() -> None:
     ui_port = find_available_port(args.http_port)
     url = f"http://127.0.0.1:{ui_port}"
 
+    lan_ip = get_lan_ip()
     print("===============================================================")
     print("                    STREAMCHAT CLIENT")
     print("===============================================================")
     print(f"  * UDP Transport Engine:   Connected to {args.server_ip}:{args.server_port} (UDP)")
     print(f"  * Local Web UI Bridge:    {url}")
+    if lan_ip != "127.0.0.1":
+        print(f"  * LAN Web UI (Phone/Tab): http://{lan_ip}:{ui_port}")
     print("  * 100% compliant with course requirements (ADR-004)")
     print("===============================================================")
 

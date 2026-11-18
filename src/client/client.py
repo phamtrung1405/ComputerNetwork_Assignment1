@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import random
 import socket
 import tempfile
 import threading
@@ -57,6 +58,11 @@ class ChatClient:
         self._sock: socket.socket = socket.socket(
             socket.AF_INET, socket.SOCK_DGRAM
         )
+        try:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+        except OSError:
+            pass
         self._sock.setblocking(False)
         self._sock.bind(("0.0.0.0", 0))  # Random available port
 
@@ -66,6 +72,7 @@ class ChatClient:
             is_server=False,
             on_app_message=self._on_app_message,
         )
+        self._connection._next_stream_id = random.randrange(1, 60000, 2)
 
         self._running: bool = False
         self._username: Optional[str] = None
@@ -74,10 +81,15 @@ class ChatClient:
         # Event queue for UI
         self.event_queue: queue.Queue[dict] = queue.Queue()
 
+        # Track history fetch requests
+        self._pending_history: dict[str, dict] = {}
+        self._history_lock: threading.Lock = threading.Lock()
+
         # Track file transfers
         self._file_transfers: dict[int, dict] = {}
         # Track incoming file downloads
         self._incoming_files: dict[int, dict] = {}
+        self._early_file_chunks: dict[int, list[bytes]] = {}
         self._download_dir: str = os.path.join(tempfile.gettempdir(), "streamchat_downloads")
         os.makedirs(self._download_dir, exist_ok=True)
         # Track active online users
@@ -86,14 +98,15 @@ class ChatClient:
     # ----------------------- Connection -----------------------
 
     def connect(self, username: str, password: str) -> bool:
-        """Initiate handshake, send AUTH_REQ, and maintain event loop.
+        """Start the handshake and submit AUTH if it completes.
 
         Args:
             username: User login name.
             password: User password (will be hashed with SHA-256).
 
         Returns:
-            ``True`` when connection has been started (auth result arrives via event).
+            ``True`` if the handshake completed and AUTH was submitted;
+            ``False`` if the handshake timed out and AUTH was not sent.
         """
         self._username = username
         if not self._running:
@@ -112,6 +125,9 @@ class ChatClient:
 
         # Wait for handshake completion (up to 5 seconds)
         if not self._connection.handshake_complete.wait(timeout=5.0):
+            logger.error("Handshake timed out; refusing to send AUTH")
+            self._username = None
+            return False
             logger.error("Handshake timeout – not sending AUTH (no session key)")
             return False
 
@@ -140,6 +156,59 @@ class ChatClient:
             "text": text,
         }
         self._send_json(msg)
+
+    def fetch_history(
+        self,
+        target: str,
+        before_id: Optional[int] = None,
+        limit: int = 20,
+        timeout: float = 3.0,
+    ) -> dict:
+        """Fetch chat history from the server with cursor-based pagination.
+
+        Args:
+            target: "all" or specific username.
+            before_id: Message ID cursor to load messages before this ID.
+            limit: Number of messages to fetch (default 20).
+            timeout: Timeout in seconds waiting for server response.
+
+        Returns:
+            Dict containing success status, messages list, and has_more flag.
+        """
+        req_id = f"hist_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        event = threading.Event()
+
+        with self._history_lock:
+            self._pending_history[req_id] = {
+                "event": event,
+                "data": None,
+            }
+
+        req_msg = {
+            "type": "FETCH_HISTORY",
+            "req_id": req_id,
+            "target": target,
+            "before_id": before_id,
+            "limit": limit,
+        }
+        self._send_json(req_msg)
+
+        signaled = event.wait(timeout=timeout)
+        with self._history_lock:
+            pending = self._pending_history.pop(req_id, None)
+
+        if signaled and pending and pending.get("data"):
+            data = pending["data"]
+            return {
+                "success": True,
+                "messages": data.get("messages", []),
+                "has_more": data.get("has_more", False),
+            }
+        return {
+            "success": False,
+            "messages": [],
+            "has_more": False,
+        }
 
     # ----------------------- File Transfer -----------------------
 
@@ -199,18 +268,6 @@ class ChatClient:
             "status": "transferring",
             "file_path": file_path,
         }
-        self._incoming_files[stream_id] = {
-            "filename": filename,
-            "size": file_size,
-            "sha256": file_hash,
-            "from": self._username,
-            "target": target,
-            "received": file_size,
-            "chunks": [],
-            "file_path": file_path,
-            "status": "completed",
-            "download_url": f"/api/download?stream_id={stream_id}&filename={quote(filename)}",
-        }
 
         return stream_id
 
@@ -227,6 +284,9 @@ class ChatClient:
         try:
             with open(file_path, "rb") as f:
                 while True:
+                    if not self._running or self._connection.closed:
+                        raise OSError("Connection closed during file transfer")
+
                     chunk: bytes = f.read(4096)
                     if not chunk:
                         break
@@ -234,11 +294,37 @@ class ChatClient:
 
                     # Update progress
                     if stream.stream_id in self._file_transfers:
-                        self._file_transfers[stream.stream_id]["sent"] += len(chunk)
+                        tinfo = self._file_transfers[stream.stream_id]
+                        tinfo["sent"] += len(chunk)
+                        fsize = tinfo.get("size", 1) or 1
+                        sent_bytes = tinfo["sent"]
+                        if sent_bytes - tinfo.get("_last_reported", 0) >= 131072:
+                            tinfo["_last_reported"] = sent_bytes
+                            pct = min(99, int((sent_bytes / fsize) * 100))
+                            self.event_queue.put({
+                                "type": "FILE_PROGRESS",
+                                "stream_id": stream.stream_id,
+                                "filename": tinfo.get("filename", os.path.basename(file_path)),
+                                "size": fsize,
+                                "received": sent_bytes,
+                                "progress": pct,
+                            })
 
-                    # Simple rate limiting: check can_send with low latency sleep
-                    while not self._connection.reliability.can_send():
-                        time.sleep(0.001)
+                    # Backpressure & Flow Control:
+                    # Ngăn chặn việc nạp quá tải hàng nghìn gói vào RAM khi tốc độ mạng chậm hơn tốc độ đọc đĩa
+                    while len(self._connection._tx_queue) > 64 or not self._connection.reliability.can_send():
+                        if not self._running or self._connection.closed:
+                            raise OSError("Connection closed during file transfer")
+                        time.sleep(0.002)
+
+            # Chờ cho đến khi toàn bộ hàng đợi gửi được truyền đi và nhận ACK đầy đủ từ Server
+            while self._running and not self._connection.closed:
+                if len(self._connection._tx_queue) == 0 and self._connection.reliability.in_flight == 0:
+                    break
+                time.sleep(0.01)
+
+            if not self._running or self._connection.closed:
+                raise OSError("Connection closed before file transfer could complete")
 
             if stream.stream_id in self._file_transfers:
                 self._file_transfers[stream.stream_id]["status"] = "completed"
@@ -293,8 +379,11 @@ class ChatClient:
             data: Message data bytes.
         """
         # If this is a chunk on an active file stream, assemble it
-        if stream_id != 0 and stream_id in self._incoming_files:
-            self._handle_incoming_file_chunk(stream_id, data)
+        if stream_id != 0:
+            if stream_id in self._incoming_files:
+                self._handle_incoming_file_chunk(stream_id, data)
+            else:
+                self._early_file_chunks.setdefault(stream_id, []).append(data)
             return
 
         try:
@@ -332,6 +421,11 @@ class ChatClient:
                 pass
             # Recreate clean socket & connection so future logins work cleanly
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+            except OSError:
+                pass
             self._sock.setblocking(False)
             self._sock.bind(("0.0.0.0", 0))
             self._connection = Connection(
@@ -340,8 +434,17 @@ class ChatClient:
                 is_server=False,
                 on_app_message=self._on_app_message,
             )
+            self._connection._next_stream_id = random.randrange(1, 60000, 2)
         elif msg.get("type") == "USER_LIST":
             self.online_users = list(msg.get("users", []))
+        elif msg.get("type") == "HISTORY_RESP":
+            req_id = msg.get("req_id")
+            with self._history_lock:
+                pending = self._pending_history.get(req_id)
+                if pending:
+                    pending["data"] = msg
+                    pending["event"].set()
+            return  # Consumed synchronously by fetch_history, don't forward to UI SSE queue
         elif msg.get("type") in ("FILE", "FILE_READY"):
             sid = msg.get("stream_id")
             fname = msg.get("filename", "")
@@ -374,6 +477,11 @@ class ChatClient:
                     self._incoming_files[sid]["file_path"] = saved_path
                     self._incoming_files[sid]["status"] = "completed"
                     msg["completed"] = True
+                else:
+                    # Flush any early chunks that arrived before metadata
+                    early_chunks = self._early_file_chunks.pop(sid, [])
+                    for chunk in early_chunks:
+                        self._handle_incoming_file_chunk(sid, chunk)
 
         self.event_queue.put(msg)
 

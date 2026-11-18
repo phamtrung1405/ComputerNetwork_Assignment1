@@ -1,6 +1,6 @@
 # STREAMCHAT API Contract
 
-What each module exposes and what it expects, so you can call it without reading its code. Signatures are copied from `feat/Jaden` (`d869b8c`). Anything not listed here is private (leading `_`) and may change without notice.
+What each module exposes and what it expects, so you can call it without reading its code. This contract reflects the current repository as of 2026-11-13. Anything not listed here is private (leading `_`) and may change without notice.
 
 Rules for everyone (from `AGENTS.md`):
 
@@ -33,7 +33,9 @@ Values only. Use the names, never the literals.
 | CUBIC        | `CUBIC_C`, `CUBIC_BETA`, `INITIAL_CWND`, `MIN_CWND`, `MAX_CWND`, `SSTHRESH_INITIAL`                                                                                                                    |
 | Defaults     | `DEFAULT_SERVER_HOST="127.0.0.1"`, `DEFAULT_SERVER_PORT=9000`, `DEFAULT_HTTP_PORT=8080`                                                                                                                |
 
-Known mismatch: `constants.MAX_APP_PAYLOAD` is 1378, but the real per-chunk limit is `transport.stream.SAFE_MAX_APP_PAYLOAD = 1362` (1400 - 22 - 16). Never size a chunk from `MAX_APP_PAYLOAD`; let `Stream.write` do the chunking.
+Header format: `HEADER_FORMAT` and the compatibility alias `HEADER_STRUCT_FMT` are both `!BIIBHIHI`, which encodes the 22-byte header used by `packet.pack` and `packet.unpack`.
+
+`MAX_APP_PAYLOAD` and `transport.stream.SAFE_MAX_APP_PAYLOAD` are both 1362 bytes (1400 - 22 - 16). `Stream.write` performs chunking. `PROTOCOL_MAGIC` is reserved and is not included in or validated by the current wire format.
 
 ---
 
@@ -55,10 +57,10 @@ def pack(msg_type: int, conn_id: int, seq_num: int, flags: int,
     # returns 22-byte header + payload. payload_len is filled for you.
 
 def unpack(raw_bytes: bytes) -> tuple[Header, bytes]
-    # raises ValueError if the datagram is shorter than 22 bytes or malformed.
+    # raises ValueError if the datagram is shorter than 22 bytes.
 ```
 
-Contract: the first 22 bytes of a datagram are the header and are also the AEAD associated data. For encrypted DATA, `payload_len` equals `len(plaintext) + 16`.
+Contract: the first 22 bytes of a datagram are the header and are also the AEAD associated data. For encrypted DATA, `payload_len` equals `len(plaintext) + 16`. `unpack` currently slices by the declared payload length but does not reject truncated payloads or trailing bytes.
 
 ---
 

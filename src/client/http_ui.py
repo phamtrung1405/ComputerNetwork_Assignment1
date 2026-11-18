@@ -9,17 +9,19 @@ Server-Sent Events (SSE) connections to push real-time data to browsers.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import mimetypes
 import os
 import queue
+import secrets
 import socket
 import tempfile
 import threading
 import time
 from typing import Optional
-from urllib.parse import unquote, parse_qs, urlsplit
+from urllib.parse import unquote, parse_qs, urlsplit, quote
 import uuid
 
 from client.client import ChatClient
@@ -49,13 +51,16 @@ class HttpUI:
         self,
         port: int = DEFAULT_HTTP_PORT,
         client: Optional[ChatClient] = None,
+        host: str = "0.0.0.0",
     ) -> None:
-        """Initialize TCP socket at 127.0.0.1.
+        """Initialize TCP socket.
 
         Args:
             port: HTTP port (default 8080).
             client: ChatClient object for communication.
+            host: Binding interface (default 0.0.0.0 to allow LAN devices).
         """
+        self._host: str = host
         self._port: int = port
         self._client: Optional[ChatClient] = client
         self._sock: Optional[socket.socket] = None
@@ -66,6 +71,35 @@ class HttpUI:
         self._history_lock: threading.Lock = threading.Lock()
         self._online_users: list[str] = []
         self._users_lock: threading.Lock = threading.Lock()
+        self._active_session_token: Optional[str] = None
+        self._session_lock: threading.Lock = threading.Lock()
+
+    @staticmethod
+    def _extract_cookie(headers: dict, name: str) -> Optional[str]:
+        """Extract a cookie value from HTTP request headers."""
+        raw_cookie = headers.get("cookie", "")
+        if not raw_cookie:
+            return None
+        for item in raw_cookie.split(";"):
+            parts = item.strip().split("=", 1)
+            if len(parts) == 2 and parts[0].strip() == name:
+                return unquote(parts[1].strip())
+        return None
+
+    def _is_valid_session(self, headers: dict) -> bool:
+        """Check whether the request holds the active authenticated session token."""
+        if self._client is None or not self._client.is_authenticated:
+            return False
+        with self._session_lock:
+            if not self._active_session_token:
+                return False
+            # Check port-isolated cookie first to avoid cross-port collisions in the same browser,
+            # then fallback to generic streamchat_session for backward compatibility.
+            port = getattr(self, "_port", 8080)
+            token = self._extract_cookie(headers, f"streamchat_session_{port}")
+            if not token:
+                token = self._extract_cookie(headers, "streamchat_session")
+            return bool(token and hmac.compare_digest(token, self._active_session_token))
 
     def set_client(self, client: ChatClient) -> None:
         """Assign ChatClient after initialization.
@@ -84,12 +118,12 @@ class HttpUI:
         """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("127.0.0.1", self._port))
+        self._sock.bind((self._host, self._port))
         self._sock.listen(16)
         self._sock.settimeout(1.0)
         self._running = True
 
-        logger.info("HTTP UI listening at http://127.0.0.1:%d", self._port)
+        logger.info("HTTP UI listening on %s:%d (Local: http://127.0.0.1:%d)", self._host, self._port, self._port)
 
         # Thread pumping SSE events
         sse_thread = threading.Thread(target=self._sse_pump, daemon=True)
@@ -168,29 +202,32 @@ class HttpUI:
             if method == "GET" and path == "/":
                 self._serve_static(client_socket, "index.html")
             elif method == "GET" and path in ("/events", "/api/events"):
-                self._handle_sse(client_socket)
+                self._handle_sse(client_socket, headers)
                 return  # SSE keeps the connection open
             elif method == "GET" and path.startswith("/static/"):
                 filename: str = path[len("/static/"):]
                 self._serve_static(client_socket, filename)
             elif method == "GET" and path == "/api/status":
-                self._handle_status(client_socket)
+                self._handle_status(client_socket, headers)
             elif method == "GET" and path == "/api/users":
                 self._handle_users(client_socket)
             elif method == "GET" and path == "/api/history":
-                self._handle_history(client_socket)
+                self._handle_history(client_socket, headers)
+            elif method == "POST" and path in ("/api/chat/history", "/api/history"):
+                body = self._read_text_body(client_socket, body_prefix, content_length)
+                self._handle_chat_history(client_socket, body, headers)
             elif method == "GET" and path == "/api/download":
                 self._handle_download(client_socket, query_params)
             elif method == "GET" and path == "/api/progress":
                 self._handle_progress(client_socket)
             elif method == "POST" and path == "/api/login":
                 body = self._read_text_body(client_socket, body_prefix, content_length)
-                self._handle_login(client_socket, body)
+                self._handle_login(client_socket, body, headers)
             elif method == "POST" and path == "/api/logout":
                 self._handle_logout(client_socket)
             elif method == "POST" and path == "/api/send":
                 body = self._read_text_body(client_socket, body_prefix, content_length)
-                self._handle_send(client_socket, body)
+                self._handle_send(client_socket, body, headers)
             elif method == "POST" and path == "/api/file":
                 if content_type.startswith("application/json"):
                     body = self._read_text_body(client_socket, body_prefix, content_length)
@@ -252,8 +289,16 @@ class HttpUI:
 
     def _handle_logout(self, client_socket: socket.socket) -> None:
         """Log out the attached UDP client and return an HTTP status response."""
+        with self._session_lock:
+            self._active_session_token = None
+        port = getattr(self, "_port", 8080)
         extra_headers = {
-            "Set-Cookie": "streamchat_user=; Path=/; Max-Age=0; SameSite=Lax",
+            "Set-Cookie": [
+                f"streamchat_user_{port}=; Path=/; Max-Age=0; SameSite=Lax",
+                f"streamchat_session_{port}=; Path=/; Max-Age=0; SameSite=Lax",
+                "streamchat_user=; Path=/; Max-Age=0; SameSite=Lax",
+                "streamchat_session=; Path=/; Max-Age=0; SameSite=Lax",
+            ],
         }
         with self._history_lock:
             self._message_history.clear()
@@ -278,12 +323,23 @@ class HttpUI:
 
     # ----------------------- SSE -----------------------
 
-    def _handle_sse(self, client_socket: socket.socket) -> None:
+    def _handle_sse(self, client_socket: socket.socket, headers: Optional[dict] = None) -> None:
         """Establish Server-Sent Events connection.
 
         Args:
             client_socket: Client socket.
+            headers: Optional request headers.
         """
+        req_headers = headers or {}
+        # Block unauthorized sessions from hijacking the SSE stream if port is active
+        if self._client is not None and self._client.is_authenticated:
+            if not self._is_valid_session(req_headers):
+                self._send_response(
+                    client_socket, 403, "text/plain", b"Port is locked by another active session.\r\n"
+                )
+                client_socket.close()
+                return
+
         response_header: str = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -335,12 +391,14 @@ class HttpUI:
             ev_type = event.get("type")
             if ev_type == "FILE_READY":
                 sid = event.get("stream_id")
+                from_u = event.get("from")
                 found = False
                 for idx, existing in enumerate(self._message_history):
                     if (
                         existing.get("type") == "FILE_READY"
                         and sid is not None
                         and existing.get("stream_id") == sid
+                        and existing.get("from") == from_u
                     ):
                         self._message_history[idx].update(event)
                         found = True
@@ -420,21 +478,45 @@ class HttpUI:
     # ----------------------- API handlers ------------------------
 
     def _handle_login(
-        self, client_socket: socket.socket, body: str
+        self, client_socket: socket.socket, body: str, headers: Optional[dict] = None
     ) -> None:
         """Handle POST /api/login.
 
         Args:
             client_socket: Client socket.
             body: JSON body string.
+            headers: Optional request headers.
         """
         try:
+            # If the port already has an active authenticated user, reject other login attempts
+            if self._client is not None and getattr(self._client, "is_authenticated", False):
+                port_num = getattr(self, "_port", 8080)
+                uname = getattr(self._client, "username", "someone")
+                self._send_json_response(
+                    client_socket,
+                    403,
+                    {
+                        "status": "error",
+                        "port_locked": True,
+                        "message": f"Cổng {port_num} hiện đang có tài khoản @{uname} đăng nhập. Vui lòng mở cổng client khác.",
+                    },
+                )
+                client_socket.close()
+                return
+
             data: dict = json.loads(body)
             username: str = data.get("username", "")
             password: str = data.get("password", "")
 
             if self._client is not None:
-                self._client.connect(username, password)
+                if not self._client.connect(username, password):
+                    resp: dict = {
+                        "status": "error",
+                        "message": "Secure handshake timed out. Authentication was not sent; please try again.",
+                    }
+                    self._send_json_response(client_socket, 200, resp)
+                    return
+
                 # Wait up to 2.5 seconds for UDP handshake and auth verification
                 start_t = time.monotonic()
                 while time.monotonic() - start_t < 2.5:
@@ -443,13 +525,22 @@ class HttpUI:
                     time.sleep(0.05)
 
                 if self._client.is_authenticated:
+                    session_token = secrets.token_hex(16)
+                    with self._session_lock:
+                        self._active_session_token = session_token
                     resp: dict = {
                         "status": "ok",
                         "username": username,
                         "message": f"Successfully logged in as @{username}!",
                     }
+                    port = getattr(self, "_port", 8080)
                     extra_headers = {
-                        "Set-Cookie": f"streamchat_user={username}; Path=/; Max-Age=86400; SameSite=Lax",
+                        "Set-Cookie": [
+                            f"streamchat_user_{port}={quote(username)}; Path=/; Max-Age=86400; SameSite=Lax",
+                            f"streamchat_session_{port}={session_token}; Path=/; Max-Age=86400; SameSite=Lax",
+                            f"streamchat_user={quote(username)}; Path=/; Max-Age=86400; SameSite=Lax",
+                            f"streamchat_session={session_token}; Path=/; Max-Age=86400; SameSite=Lax",
+                        ],
                     }
                     self._send_json_response(client_socket, 200, resp, extra_headers=extra_headers)
                 else:
@@ -468,15 +559,24 @@ class HttpUI:
         client_socket.close()
 
     def _handle_send(
-        self, client_socket: socket.socket, body: str
+        self, client_socket: socket.socket, body: str, headers: Optional[dict] = None
     ) -> None:
         """Handle POST /api/send.
 
         Args:
             client_socket: Client socket.
             body: JSON body containing ``target`` and ``text``.
+            headers: Optional request headers.
         """
         try:
+            req_headers = headers or {}
+            if self._client is None or not self._client.is_authenticated or not self._is_valid_session(req_headers):
+                self._send_json_response(
+                    client_socket, 401, {"status": "error", "message": "Unauthorized or session locked"}
+                )
+                client_socket.close()
+                return
+
             data: dict = json.loads(body)
             target: str = data.get("target", "all")
             text: str = data.get("text", "")
@@ -655,19 +755,38 @@ class HttpUI:
             cur_users = list(self._client.online_users)
         return cur_users
 
-    def _handle_status(self, client_socket: socket.socket) -> None:
+    def _handle_status(self, client_socket: socket.socket, headers: Optional[dict] = None) -> None:
         """Handle GET /api/status.
 
         Args:
             client_socket: Client socket.
+            headers: Optional request headers.
         """
+        req_headers = headers or {}
+        is_auth = bool(self._client and self._client.is_authenticated)
+        uname = self._client.username if (self._client and is_auth) else None
         cur_users = self._get_active_users()
-        status: dict = {
-            "authenticated": self._client.is_authenticated if self._client else False,
-            "username": self._client.username if self._client else None,
-            "connected": self._client is not None and self._client._running,
-            "users": cur_users,
-        }
+        is_valid = self._is_valid_session(req_headers)
+
+        if is_auth and not is_valid:
+            # Port has an active session from another browser/device
+            status: dict = {
+                "authenticated": False,
+                "username": None,
+                "connected": True,
+                "users": [],
+                "port_locked": True,
+                "locked_by": uname,
+                "message": f"Cổng {self._port} hiện đang được đăng nhập bởi tài khoản @{uname} trên một thiết bị hoặc trình duyệt khác.",
+            }
+        else:
+            status = {
+                "authenticated": is_auth and is_valid,
+                "username": uname if (is_auth and is_valid) else None,
+                "connected": self._client is not None and self._client._running,
+                "users": cur_users if (is_auth and is_valid) else [],
+                "port_locked": False,
+            }
         self._send_json_response(client_socket, 200, status)
         client_socket.close()
 
@@ -681,10 +800,44 @@ class HttpUI:
         self._send_json_response(client_socket, 200, resp)
         client_socket.close()
 
-    def _handle_history(self, client_socket: socket.socket) -> None:
+    def _handle_history(self, client_socket: socket.socket, headers: Optional[dict] = None) -> None:
         """Handle GET /api/history to restore chat messages on reload."""
-        with self._history_lock:
-            msgs = list(self._message_history)
+        req_headers = headers or {}
+        if not self._is_valid_session(req_headers):
+            resp = {
+                "status": "ok",
+                "authenticated": False,
+                "username": None,
+                "messages": [],
+                "users": [],
+                "port_locked": bool(self._client and self._client.is_authenticated),
+            }
+            self._send_json_response(client_socket, 200, resp)
+            client_socket.close()
+            return
+
+        msgs: list = []
+        if self._client is not None and self._client.is_authenticated:
+            try:
+                hist_res = self._client.fetch_history(target="all", limit=20)
+                if hist_res.get("success"):
+                    for m in hist_res.get("messages", []):
+                        msgs.append({
+                            "type": "MSG",
+                            "id": m.get("id"),
+                            "from": m.get("from"),
+                            "target": m.get("target"),
+                            "text": m.get("text"),
+                            "timestamp": m.get("timestamp"),
+                            "is_private": m.get("is_private", False),
+                        })
+            except Exception as e:
+                logger.warning("Failed to fetch history from server for reload: %s", e)
+
+        if not msgs:
+            with self._history_lock:
+                msgs = list(self._message_history)
+
         cur_users = self._get_active_users()
         resp = {
             "status": "ok",
@@ -692,9 +845,49 @@ class HttpUI:
             "username": self._client.username if self._client else None,
             "messages": msgs,
             "users": cur_users,
+            "port_locked": False,
         }
         self._send_json_response(client_socket, 200, resp)
         client_socket.close()
+
+    def _handle_chat_history(
+        self, client_socket: socket.socket, body: str, headers: Optional[dict] = None
+    ) -> None:
+        """Handle POST /api/chat/history (Cursor-based pagination)."""
+        try:
+            req_headers = headers or {}
+            if not self._is_valid_session(req_headers):
+                self._send_json_response(
+                    client_socket, 401, {"success": False, "messages": [], "has_more": False}
+                )
+                return
+
+            data: dict = json.loads(body) if body else {}
+            target: str = str(data.get("target", "all"))
+            before_id = data.get("before_id")
+            if before_id is not None:
+                try:
+                    before_id = int(before_id)
+                except (ValueError, TypeError):
+                    before_id = None
+            limit = int(data.get("limit", 20))
+
+            if self._client is not None and self._client.is_authenticated:
+                res = self._client.fetch_history(
+                    target=target, before_id=before_id, limit=limit
+                )
+                self._send_json_response(client_socket, 200, res)
+            else:
+                self._send_json_response(
+                    client_socket, 401, {"success": False, "messages": [], "has_more": False}
+                )
+        except Exception as exc:
+            logger.error("Error in _handle_chat_history: %s", exc)
+            self._send_json_response(
+                client_socket, 500, {"success": False, "messages": [], "has_more": False, "error": str(exc)}
+            )
+        finally:
+            client_socket.close()
 
     def _handle_download(self, client_socket: socket.socket, query_params: dict) -> None:
         """Handle GET /api/download?stream_id=...&filename=..."""
@@ -779,7 +972,11 @@ class HttpUI:
         ]
         if extra_headers:
             for k, v in extra_headers.items():
-                header_lines.append(f"{k}: {v}")
+                if isinstance(v, list):
+                    for item in v:
+                        header_lines.append(f"{k}: {item}")
+                else:
+                    header_lines.append(f"{k}: {v}")
         header = "\r\n".join(header_lines) + "\r\n\r\n"
         try:
             client_socket.sendall(header.encode("utf-8") + body)
@@ -791,7 +988,7 @@ class HttpUI:
         client_socket: socket.socket,
         status_code: int,
         data: dict,
-        extra_headers: Optional[dict[str, str]] = None,
+        extra_headers: Optional[dict[str, str | list[str]]] = None,
     ) -> None:
         """Send JSON response.
 

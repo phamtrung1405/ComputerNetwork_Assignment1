@@ -25,8 +25,8 @@ from common.constants import (
     CUBIC_BETA,
 )
 
-# Số lần truyền lại tối đa mặc định trước khi đánh dấu gói tin hỏng vĩnh viễn
-DEFAULT_MAX_RETRANSMITS: int = 8
+# Số lần truyền lại tối đa mặc định trước khi đánh dấu gói tin hỏng vĩnh viễn (RTO timeout)
+DEFAULT_MAX_RETRANSMITS: int = 15
 
 # Chu kỳ đồng hồ tối thiểu cho tính toán RTO (RFC 6298 quy định granular clock G)
 TICK_INTERVAL_CLOCK: float = 0.05
@@ -192,11 +192,17 @@ class ReliabilityManager:
                     self.max_acked_seq - max(pkt.packet_num, pkt.fr_mark) >= FAST_RETRANSMIT_DUPTHRESH
                 )
                 if timed_out or fast_lost:
-                    if pkt.retransmit_count >= self.max_retransmits:
+                    # Chỉ khi RTO timeout thực sự (peer im lặng) mới ghi nhận failed packet làm đóng kết nối.
+                    # Khi chỉ là fast_lost trên luồng data lớn, peer vẫn đang ACK liên tục nên tuyệt đối không được giết phiên kết nối.
+                    if timed_out and pkt.retransmit_count >= self.max_retransmits:
                         # Gỡ khỏi _unacked để không chiếm cửa sổ gửi vĩnh viễn; báo qua take_failed()
                         self.failed_packets.add(pkt.packet_num)
                         self._failed_pending.add(pkt.packet_num)
                         del self._unacked[seq]
+                        continue
+
+                    # Nếu là fast_lost mà gói đã chạm ngưỡng max_retransmits: chờ RTO timeout thực tế chứ không spam
+                    if fast_lost and not timed_out and pkt.retransmit_count >= self.max_retransmits:
                         continue
 
                     retransmits.append(pkt.raw_data)

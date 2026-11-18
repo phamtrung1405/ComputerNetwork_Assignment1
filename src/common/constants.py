@@ -3,14 +3,14 @@ common/constants.py
 ~~~~~~~~~~~~~~~~~~~
 Global constants for the custom reliable transport protocol.
 
-Includes: magic number, packet types, flags, header sizes, timeout configs,
-MTU, and congestion control parameters.
+Includes packet types, flags, header layout, timeout configs, MTU, and
+congestion control parameters.
 """
 
 from __future__ import annotations
 
 # ──────────────────────────────────────────────────
-# Magic number – first 4 bytes for protocol identification
+# Reserved; packet.pack/unpack do not emit or validate this value.
 # ──────────────────────────────────────────────────
 PROTOCOL_MAGIC: bytes = b"\xDE\xAD\xBE\xEF"
 
@@ -50,9 +50,8 @@ FLAG_ENCRYPTED: int = 0x08      # Payload is AES-256-GCM encrypted
 #                           22 bytes
 # ──────────────────────────────────────────────────
 HEADER_SIZE: int = 22
-HEADER_FORMAT: str = "!BIBHIHHI"
-
-HEADER_STRUCT_FMT: str = "!BIIBHIH2s"
+HEADER_FORMAT: str = "!BIIBHIHI"
+HEADER_STRUCT_FMT: str = HEADER_FORMAT
 
 # ──────────────────────────────────────────────────
 # Sizes & MTU

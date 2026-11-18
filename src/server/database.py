@@ -63,6 +63,21 @@ class UserDatabase:
             except sqlite3.OperationalError:
                 pass
 
+            # Create messages table for persistent chat history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_target_id ON messages(target, id);
+            """)
+
             # Check if any users exist
             cursor.execute("SELECT COUNT(*) FROM users;")
             count = cursor.fetchone()[0]
@@ -185,6 +200,105 @@ class UserDatabase:
                 return True
         except sqlite3.IntegrityError:
             return False
+
+    def save_message(
+        self, sender: str, target: str, text: str, timestamp: float
+    ) -> int:
+        """Save chat message to database and return assigned message ID.
+
+        Args:
+            sender: Username of message sender.
+            target: 'all' or recipient username.
+            text: Message text content.
+            timestamp: Epoch timestamp.
+
+        Returns:
+            int: Inserted message id.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO messages (sender, target, text, timestamp) VALUES (?, ?, ?, ?);",
+                (sender, target, text, timestamp),
+            )
+            msg_id = cursor.lastrowid
+            conn.commit()
+            return msg_id if msg_id is not None else 0
+
+    def get_chat_history(
+        self,
+        target: str,
+        user1: str = "",
+        user2: str = "",
+        before_id: Optional[int] = None,
+        limit: int = 20,
+    ) -> tuple[list[dict], bool]:
+        """Retrieve paginated chat history in chronological order.
+
+        Args:
+            target: 'all' for group chat, or username for direct chat.
+            user1: Current requesting username.
+            user2: Target peer username if unicast.
+            before_id: Cursor to load messages with id < before_id.
+            limit: Maximum messages to return per page.
+
+        Returns:
+            Tuple of (messages_list, has_more_boolean).
+        """
+        query_limit = limit + 1
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if target == "all":
+                if before_id is not None:
+                    query = (
+                        "SELECT id, sender, target, text, timestamp "
+                        "FROM messages WHERE target = 'all' AND id < ? "
+                        "ORDER BY id DESC LIMIT ?;"
+                    )
+                    params: tuple = (before_id, query_limit)
+                else:
+                    query = (
+                        "SELECT id, sender, target, text, timestamp "
+                        "FROM messages WHERE target = 'all' "
+                        "ORDER BY id DESC LIMIT ?;"
+                    )
+                    params = (query_limit,)
+            else:
+                peer = user2 or target
+                u1 = user1.strip().lower()
+                u2 = peer.strip().lower()
+                if before_id is not None:
+                    query = (
+                        "SELECT id, sender, target, text, timestamp "
+                        "FROM messages WHERE ((LOWER(sender) = ? AND LOWER(target) = ?) OR (LOWER(sender) = ? AND LOWER(target) = ?)) "
+                        "AND id < ? ORDER BY id DESC LIMIT ?;"
+                    )
+                    params = (u1, u2, u2, u1, before_id, query_limit)
+                else:
+                    query = (
+                        "SELECT id, sender, target, text, timestamp "
+                        "FROM messages WHERE ((LOWER(sender) = ? AND LOWER(target) = ?) OR (LOWER(sender) = ? AND LOWER(target) = ?)) "
+                        "ORDER BY id DESC LIMIT ?;"
+                    )
+                    params = (u1, u2, u2, u1, query_limit)
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            has_more = len(rows) > limit
+            page_rows = rows[:limit]
+
+            messages = [
+                {
+                    "id": r["id"],
+                    "from": r["sender"],
+                    "target": r["target"],
+                    "text": r["text"],
+                    "timestamp": r["timestamp"],
+                    "is_private": r["target"] != "all",
+                }
+                for r in reversed(page_rows)
+            ]
+            return messages, has_more
 
 
 # Singleton shared instance

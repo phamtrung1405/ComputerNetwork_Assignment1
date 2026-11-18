@@ -225,6 +225,8 @@ class Connection:
             offset=offset,
             payload=payload,
         )
+        print("\n" * 3)
+        print("[SENDING PACKET]")
         self._raw_send(raw)
 
     def _flush_send_queue(self) -> None:
@@ -278,8 +280,32 @@ class Connection:
                 offset=offset,
                 payload=payload,
             )
-        print(f"[PAYLOAD] {payload}")
 
+        debug_info = {
+            "msg_type": PKT_DATA,
+            "conn_id": self.conn_id,
+            "seq_num": seq,
+            "flags": flags,
+            "stream_id": stream_id,
+            "offset": offset,
+            # Chuyển payload sang hex (nếu là bytes) để tránh lỗi TypeError: Object of type bytes is not JSON serializable
+            "payload": payload.hex() if isinstance(payload, bytes) else payload,
+            "raw_size": len(raw),
+        }
+
+
+        
+        print("\n" * 3)
+        print("[TRANSMIT DATA]")
+        print(
+            json.dumps(
+                debug_info,
+                indent=2,
+                default=lambda o: o.hex()
+                if isinstance(o, (bytes, bytearray, memoryview))
+                else str(o),
+            )
+        )
         self.reliability.mark_sent(seq, raw)
         self._raw_send(raw)
 
@@ -486,6 +512,29 @@ class Connection:
             offset=0,
             payload=ack_payload,
         )
+
+        debug_info = {
+            "msg_type": PKT_ACK,
+            "conn_id": self.conn_id,
+            "seq_num": 0,
+            "flags": FLAG_NONE,
+            "stream_id": 0,
+            "offset": 0,
+            # Chuyển payload sang hex (nếu là bytes) để tránh lỗi TypeError: Object of type bytes is not JSON serializable
+            "payload": ack_payload,
+        }
+
+        print("\n" * 3)
+        print("[SEND ACK]")
+        print(
+            json.dumps(
+                debug_info,
+                indent=2,
+                default=lambda o: o.hex()
+                if isinstance(o, (bytes, bytearray, memoryview))
+                else str(o),
+            )
+        )
         self._raw_send(raw)
 
     # ─────────────────────── HANDSHAKE ───────────────────────
@@ -513,9 +562,11 @@ class Connection:
         self._hello_raw = raw
         self._hello_sent_time = time.monotonic()
         self._hello_retries = 0
-        self._raw_send(raw)
+
+        print("\n" * 3)
         print(f"[debug] handshake 1/2: client sent HELLO -> {self.remote_addr} conn_id={self.conn_id}", flush=True)
         logger.info("Sent HELLO to %s (conn_id=%d)", self.remote_addr, self.conn_id)
+        self._raw_send(raw)
 
     def _install_keys(self, peer_pub_bytes: bytes) -> None:
         """Derive directional keys and pick the send/receive key by role (K1)."""
@@ -570,12 +621,13 @@ class Connection:
             payload=ack_payload,
         )
         self._hello_ack_raw = raw
-        self._raw_send(raw)
-        self.handshake_complete.set()
+        print("\n" * 3)
         print(f"[debug] handshake 2/2: server got HELLO from {self.remote_addr}, sent HELLO_ACK, keys installed conn_id={self.conn_id}", flush=True)
         logger.info(
             "Handshake complete (server side) conn_id=%d", self.conn_id
         )
+        self._raw_send(raw)
+        self.handshake_complete.set()
 
     def _handle_hello_ack(self, header: packet.Header, payload: bytes) -> None:
         """Handle HELLO_ACK from Server (Client side).
@@ -623,6 +675,9 @@ class Connection:
             offset=0,
             payload=b"",
         )
+
+        print("\n" * 3)
+        print("[SENDING HEARTBEAT ACK]")
         self._raw_send(raw)
         self._last_heartbeat = time.monotonic()
 
@@ -637,6 +692,10 @@ class Connection:
             offset=0,
             payload=b"",
         )
+
+        
+        print("\n" * 3)
+        print("[SENDING HEARTBEAT]")
         self._raw_send(raw)
 
     # ─────────────────────── Tick loop ───────────────────────
@@ -671,13 +730,17 @@ class Connection:
         ):
             self._hello_retries += 1
             self._hello_sent_time = now
+
+            print("\n" * 3)
+            print("[RESEND HELLO]")
             self._raw_send(self._hello_raw)
 
         # Retransmission
         retransmits: list[bytes] = self.reliability.get_retransmits()
         for raw_pkt in retransmits:
-            self._raw_send(raw_pkt)
+            print("\n" * 3)
             logger.debug("Retransmitting packet on conn %d", self.conn_id)
+            self._raw_send(raw_pkt)
 
         # K10: a packet exceeded max_retransmits -> the peer is unreachable, close
         failed = self.reliability.take_failed()

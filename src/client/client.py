@@ -296,9 +296,10 @@ class ChatClient:
                         tinfo["sent"] += len(chunk)
                         fsize = tinfo.get("size", 1) or 1
                         sent_bytes = tinfo["sent"]
-                        if sent_bytes - tinfo.get("_last_reported", 0) >= 131072:
-                            tinfo["_last_reported"] = sent_bytes
-                            pct = min(99, int((sent_bytes / fsize) * 100))
+                        pct = min(99, int((sent_bytes / fsize) * 100))
+                        last_pct = tinfo.get("_last_pct", -1)
+                        if pct > last_pct and (pct - last_pct >= 2 or pct >= 99):
+                            tinfo["_last_pct"] = pct
                             self.event_queue.put({
                                 "type": "FILE_PROGRESS",
                                 "stream_id": stream.stream_id,
@@ -315,9 +316,15 @@ class ChatClient:
                             raise OSError("Connection closed during file transfer")
                         time.sleep(0.002)
 
+            fsize = os.path.getsize(file_path) if os.path.isfile(file_path) else 1
+
             # Chờ cho đến khi toàn bộ hàng đợi gửi được truyền đi và nhận ACK đầy đủ từ Server
+            drain_deadline = time.monotonic() + max(30.0, fsize / 50000.0)
             while self._running and not self._connection.closed:
                 if len(self._connection._tx_queue) == 0 and self._connection.reliability.in_flight == 0:
+                    break
+                if time.monotonic() > drain_deadline:
+                    logger.warning("File transfer drain reached deadline on stream %d", stream.stream_id)
                     break
                 time.sleep(0.01)
 
@@ -327,10 +334,21 @@ class ChatClient:
             if stream.stream_id in self._file_transfers:
                 self._file_transfers[stream.stream_id]["status"] = "completed"
 
+            # Báo 100% progress và complete khi toàn bộ dữ liệu đã được ACK
+            self.event_queue.put({
+                "type": "FILE_PROGRESS",
+                "stream_id": stream.stream_id,
+                "filename": os.path.basename(file_path),
+                "size": fsize,
+                "received": fsize,
+                "progress": 100,
+            })
+
             self.event_queue.put({
                 "type": "FILE_COMPLETE",
                 "stream_id": stream.stream_id,
                 "filename": os.path.basename(file_path),
+                "size": fsize,
             })
             logger.info("File transfer completed: %s", file_path)
         except OSError as exc:

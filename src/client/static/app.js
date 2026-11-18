@@ -412,19 +412,23 @@ function createFileMessageElement(sender, filename, size, downloadUrl, isOutgoin
     const bubbleEl = document.createElement("div");
     bubbleEl.className = "message-bubble";
 
+    const isExpired = timestamp && (Date.now() / 1000 - timestamp) > 30 * 86400;
+    const sizeHtml = formatBytes(size || 0) + (isExpired ? ` • <span style="color:var(--accent-danger, #ef4444); font-size:11px; font-weight:600;">Hết hạn (>30 ngày)</span>` : "");
+    const dlAttr = (!isExpired && downloadUrl)
+        ? `href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename || "file")}"`
+        : `href="javascript:void(0)" class="btn-download-file disabled" style="opacity:0.5; pointer-events:none; cursor:not-allowed;" title="Tệp đã hết hạn sau 30 ngày"`;
+    const btnLabel = isExpired ? "⚠️ Đã hết hạn" : "Download";
+
     const card = document.createElement("div");
     card.className = "file-card-msg";
-    const dlAttr = downloadUrl
-        ? `href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename || "file")}"`
-        : `href="javascript:void(0)" class="btn-download-file disabled" style="opacity:0.6; pointer-events:none;"`;
     card.innerHTML = `
         <div class="file-card-icon">📁</div>
         <div class="file-card-details">
             <span class="file-card-name" title="${escapeHtml(filename || "file")}">${escapeHtml(filename || "file")}</span>
-            <span class="file-card-size">${formatBytes(size || 0)}</span>
+            <span class="file-card-size">${sizeHtml}</span>
         </div>
         <a ${dlAttr}>
-            📥 Download
+            ${btnLabel}
         </a>
     `;
 
@@ -455,7 +459,7 @@ function buildHistoryMessageElement(m) {
             return createFileMessageElement(
                 m.from, fname, fsize, dlUrl, isOut, m.target, sid, m.timestamp, m.id
             );
-        } catch (_) {}
+        } catch (_) { }
     }
     return createMessageElement(
         m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
@@ -875,7 +879,7 @@ fileSendBtn.addEventListener("click", () => {
             const result = JSON.parse(xhr.responseText || "{}");
             if (xhr.status >= 200 && xhr.status < 300 && result.status === "ok") {
                 fileSendBtn.textContent = "✅ Upload successful!";
-                addSystemMessage(`📤 Successfully sent file ${fileToSend.name}!`);
+                addSystemMessage(`Successfully sent file ${fileToSend.name}!`);
 
                 // Display outgoing file card immediately for the sender
                 addFileMessage(
@@ -921,7 +925,7 @@ fileSendBtn.addEventListener("click", () => {
 
 btnDisconnect.addEventListener("click", () => {
     if (currentUsername) {
-        fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
+        fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => { });
     }
     const userKey = getPortSpecificKey("streamchat_user");
     document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
@@ -1098,7 +1102,7 @@ setInterval(async () => {
         } else if (currentUsername && data.users && Array.isArray(data.users)) {
             handleUserList({ users: data.users });
         }
-    } catch (_) {}
+    } catch (_) { }
 }, 5000);
 
 // Automatically check session on page load / reload

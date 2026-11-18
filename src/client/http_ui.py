@@ -25,7 +25,7 @@ from urllib.parse import unquote, parse_qs, urlsplit, quote
 import uuid
 
 from client.client import ChatClient
-from common.constants import DEFAULT_HTTP_PORT
+from common.constants import DEFAULT_HTTP_PORT, FILE_RETENTION_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -894,16 +894,23 @@ class HttpUI:
         if not file_tuple and filename_raw and self._client is not None:
             safe_name = os.path.basename(filename_raw)
             if hasattr(self._client, "_download_dir") and os.path.isdir(self._client._download_dir):
+                now = time.time()
                 for fname in os.listdir(self._client._download_dir):
                     if fname.endswith(f"_{safe_name}") or fname == safe_name:
                         full_p = os.path.join(self._client._download_dir, fname)
                         if os.path.isfile(full_p):
+                            try:
+                                if now - os.path.getmtime(full_p) > FILE_RETENTION_SECONDS:
+                                    os.remove(full_p)
+                                    continue
+                            except OSError:
+                                pass
                             file_tuple = (safe_name, full_p)
                             break
 
         if not file_tuple:
             self._send_response(
-                client_socket, 404, "text/plain", b"File not found on this device (stored on sender's local device)."
+                client_socket, 404, "text/plain", b"File not found on this device or expired (>30 days)."
             )
             client_socket.close()
             return

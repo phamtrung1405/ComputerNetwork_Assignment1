@@ -93,3 +93,10 @@ DEFAULT_HTTP_PORT: int = 8080
 AES_KEY_SIZE: int = 32          # AES-256
 GCM_NONCE_SIZE: int = 12        # 96-bit nonce for AES-GCM
 GCM_TAG_SIZE: int = 16          # 128-bit authentication tag
+
+# ──────────────────────────────────────────────────
+# File Retention / Cache Expiration Policy (Zalo-like)
+# ──────────────────────────────────────────────────
+FILE_RETENTION_DAYS: int = 30
+FILE_RETENTION_SECONDS: float = FILE_RETENTION_DAYS * 24 * 3600.0  # 30 days in seconds
+

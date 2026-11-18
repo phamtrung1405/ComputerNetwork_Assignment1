@@ -105,6 +105,7 @@ class Connection:
 
         # Send queue gated by the congestion window (K7)
         self._tx_queue: deque = deque()
+        self._tx_ctrl_queue: deque = deque()
         self._tx_lock: threading.RLock = threading.RLock()
 
         # Sequence numbers
@@ -217,8 +218,12 @@ class Connection:
         if packet_type == PKT_DATA:
             # K7: DATA goes through a queue and only reaches the socket while the
             # congestion window has room. Never blocks the calling thread.
+            # Stream 0 (chat, control, handshake) has priority scheduling over bulk streams.
             with self._tx_lock:
-                self._tx_queue.append((stream_id, bytes(payload), flags, offset))
+                if stream_id == 0:
+                    self._tx_ctrl_queue.append((stream_id, bytes(payload), flags, offset))
+                else:
+                    self._tx_queue.append((stream_id, bytes(payload), flags, offset))
             self._flush_send_queue()
             return
 
@@ -237,11 +242,25 @@ class Connection:
     def _flush_send_queue(self) -> None:
         """Send queued DATA while ``reliability.can_send()`` is True (K7).
 
+        Stream 0 (chat, control, commands) is prioritized over bulk streams (stream > 0)
+        with emergency headroom so interactive messages never stall behind file transfers.
         Called after enqueue, after processing an ACK and from ``tick()``. It does not
         block, so it is safe from the receive loop (the server uses one thread for both).
         """
         with self._tx_lock:
+            # 1. High priority: Control / Chat (Stream 0)
+            while self._tx_ctrl_queue and (
+                self.reliability.can_send()
+                or len(self.reliability._unacked) < int(self.reliability.cwnd) + 4
+            ):
+                stream_id, payload, flags, offset = self._tx_ctrl_queue.popleft()
+                self._transmit_data(stream_id, payload, flags, offset)
+
+            # 2. Normal priority: Bulk file transfer streams
             while self._tx_queue and self.reliability.can_send():
+                if self._tx_ctrl_queue:
+                    # New high-priority message arrived, yield immediately
+                    break
                 stream_id, payload, flags, offset = self._tx_queue.popleft()
                 self._transmit_data(stream_id, payload, flags, offset)
 

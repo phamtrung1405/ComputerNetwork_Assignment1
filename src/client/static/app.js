@@ -211,6 +211,9 @@ function handleServerEvent(data) {
         case "FILE_READY":
             handleFileReady(data);
             break;
+        case "FILE_PROGRESS":
+            handleFileProgress(data);
+            break;
         case "KICKED":
             handleKicked(data);
             break;
@@ -669,6 +672,33 @@ function addFileTransferSidebar(streamId, filename, size, downloadUrl) {
     `;
 }
 
+function handleFileProgress(data) {
+    if (!data || !data.stream_id) return;
+    const emptyState = fileTransfersDiv.querySelector(".empty-state");
+    if (emptyState) emptyState.remove();
+
+    let item = document.getElementById(`transfer-${data.stream_id}`);
+    if (!item) {
+        item = document.createElement("div");
+        item.className = "transfer-item";
+        item.id = `transfer-${data.stream_id}`;
+        fileTransfersDiv.prepend(item);
+    }
+
+    const pct = data.progress !== undefined ? data.progress : Math.round(((data.received || 0) / (data.size || 1)) * 100);
+    const bytesText = data.received !== undefined ? `${formatBytes(data.received)} / ${formatBytes(data.size)}` : `${formatBytes(data.size)}`;
+    item.innerHTML = `
+        <span class="transfer-name" title="${escapeHtml(data.filename || "file")}">${escapeHtml(data.filename || "file")}</span>
+        <div class="progress-bar-bg">
+            <div class="progress-bar-fill" style="width: ${pct}%"></div>
+        </div>
+        <div class="transfer-status" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>${bytesText} (${pct}%)</span>
+            <span style="color:var(--accent-primary); font-size:11px;">Transferring...</span>
+        </div>
+    `;
+}
+
 function updateFileSendBtnState() {
     const hasFile = selectedFile !== null;
     fileSendBtn.disabled = !hasFile;
@@ -806,7 +836,7 @@ fileSendBtn.addEventListener("click", () => {
 
                 setTimeout(() => {
                     closeFileDialog();
-                }, 1200);
+                }, 350);
             } else {
                 addSystemMessage("⚠️ Failed to send file: " + (result.message || "Server error"));
                 fileSendBtn.disabled = false;

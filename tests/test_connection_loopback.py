@@ -340,6 +340,40 @@ class TestDeliveryAndFlowControlBinding(unittest.TestCase):
         self.assertEqual(got, [data])
         self.assertEqual(cli.reliability.in_flight, 0)
 
+    @bind_required
+    def test_stream0_chat_prioritized_over_bulk_file_stream(self) -> None:
+        """Stream 0 (chat/control) jumps ahead of bulk file stream in transmission order."""
+        net, cli, srv = make_pair()
+        transmitted_stream_ids: list[int] = []
+        real_transmit = cli._transmit_data
+
+        def mock_transmit(stream_id: int, payload: bytes, flags: int, offset: int) -> None:
+            transmitted_stream_ids.append(stream_id)
+            real_transmit(stream_id, payload, flags, offset)
+
+        cli._transmit_data = mock_transmit
+
+        # Freeze transmission by exhausting cwnd
+        cli.reliability.can_send = lambda: False
+
+        # Queue bulk file packets on Stream 1
+        cli.get_or_create_stream(1).write(b"FILE_BLOCK_1")
+        cli.get_or_create_stream(1).write(b"FILE_BLOCK_2")
+
+        # Now send a chat message on Stream 0 while bulk file is queued
+        cli.get_or_create_stream(0).write(b"CHAT_MSG_HELLO")
+
+        # Stream 0 enjoys priority & headroom, so it transmitted immediately while Stream 1 is still queued!
+        self.assertEqual(transmitted_stream_ids, [0], "Stream 0 must be transmitted immediately via priority headroom!")
+        self.assertEqual(len(cli._tx_queue), 2, "Stream 1 bulk file packets must remain buffered until window opens")
+
+        # Now allow window to open and flush remaining packets
+        cli.reliability.can_send = lambda: True
+        cli._flush_send_queue()
+
+        # Stream 0 was transmitted first, followed by Stream 1 packets
+        self.assertEqual(transmitted_stream_ids, [0, 1, 1])
+
 
 # ─────────────────────────── Chấp nhận: truyền file + SHA-256 ───────────────────────────
 

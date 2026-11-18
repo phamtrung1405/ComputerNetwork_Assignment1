@@ -58,6 +58,11 @@ class ChatClient:
         self._sock: socket.socket = socket.socket(
             socket.AF_INET, socket.SOCK_DGRAM
         )
+        try:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+        except OSError:
+            pass
         self._sock.setblocking(False)
         self._sock.bind(("0.0.0.0", 0))  # Random available port
 
@@ -277,6 +282,9 @@ class ChatClient:
         try:
             with open(file_path, "rb") as f:
                 while True:
+                    if not self._running or self._connection.closed:
+                        raise OSError("Connection closed during file transfer")
+
                     chunk: bytes = f.read(4096)
                     if not chunk:
                         break
@@ -284,11 +292,37 @@ class ChatClient:
 
                     # Update progress
                     if stream.stream_id in self._file_transfers:
-                        self._file_transfers[stream.stream_id]["sent"] += len(chunk)
+                        tinfo = self._file_transfers[stream.stream_id]
+                        tinfo["sent"] += len(chunk)
+                        fsize = tinfo.get("size", 1) or 1
+                        sent_bytes = tinfo["sent"]
+                        if sent_bytes - tinfo.get("_last_reported", 0) >= 131072:
+                            tinfo["_last_reported"] = sent_bytes
+                            pct = min(99, int((sent_bytes / fsize) * 100))
+                            self.event_queue.put({
+                                "type": "FILE_PROGRESS",
+                                "stream_id": stream.stream_id,
+                                "filename": tinfo.get("filename", os.path.basename(file_path)),
+                                "size": fsize,
+                                "received": sent_bytes,
+                                "progress": pct,
+                            })
 
-                    # Simple rate limiting: check can_send with low latency sleep
-                    while not self._connection.reliability.can_send():
-                        time.sleep(0.001)
+                    # Backpressure & Flow Control:
+                    # Ngăn chặn việc nạp quá tải hàng nghìn gói vào RAM khi tốc độ mạng chậm hơn tốc độ đọc đĩa
+                    while len(self._connection._tx_queue) > 64 or not self._connection.reliability.can_send():
+                        if not self._running or self._connection.closed:
+                            raise OSError("Connection closed during file transfer")
+                        time.sleep(0.002)
+
+            # Chờ cho đến khi toàn bộ hàng đợi gửi được truyền đi và nhận ACK đầy đủ từ Server
+            while self._running and not self._connection.closed:
+                if len(self._connection._tx_queue) == 0 and self._connection.reliability.in_flight == 0:
+                    break
+                time.sleep(0.01)
+
+            if not self._running or self._connection.closed:
+                raise OSError("Connection closed before file transfer could complete")
 
             if stream.stream_id in self._file_transfers:
                 self._file_transfers[stream.stream_id]["status"] = "completed"
@@ -385,6 +419,11 @@ class ChatClient:
                 pass
             # Recreate clean socket & connection so future logins work cleanly
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+            except OSError:
+                pass
             self._sock.setblocking(False)
             self._sock.bind(("0.0.0.0", 0))
             self._connection = Connection(

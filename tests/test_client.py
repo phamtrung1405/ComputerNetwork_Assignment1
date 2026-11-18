@@ -9,6 +9,8 @@ import queue
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -282,6 +284,84 @@ class ClientFileTransferRoutingTests(unittest.TestCase):
         s = conn.allocate_stream()
         self.assertEqual(s.stream_id, 3)
         self.assertIn(3, conn._streams)
+
+    def test_transfer_file_waits_for_inflight_and_queue_drain(self) -> None:
+        """Kiểm tra luồng truyền file lớn: không báo FILE_COMPLETE ảo khi queue/in_flight chưa gửi xong."""
+        client = self._create_mock_client("alice")
+        test_file = os.path.join(self.temp_dir, "large_test.dat")
+        with open(test_file, "wb") as f:
+            f.write(b"X" * 8192)
+
+        stream = Mock()
+        stream.stream_id = 99
+        client._connection.closed = False
+        client._connection.allocate_stream = Mock(return_value=stream)
+        client._file_transfers[99] = {
+            "filename": "large_test.dat",
+            "size": 8192,
+            "sent": 0,
+            "status": "transferring",
+        }
+
+        # Giả lập queue có gói tin đang bay
+        client._connection._tx_queue = [(99, b"data", 0, 0)]
+        client._connection.reliability = Mock()
+        client._connection.reliability.can_send.return_value = True
+        client._connection.reliability.in_flight = 0
+
+        # Chạy transfer trong thread riêng
+        t = threading.Thread(target=client._transfer_file_data, args=(test_file, stream, "bob"), daemon=True)
+        t.start()
+
+        # Trong lúc tx_queue còn phần tử, chưa thể có FILE_COMPLETE
+        time.sleep(0.05)
+        self.assertTrue(t.is_alive())
+        self.assertEqual(client._file_transfers[99]["status"], "transferring")
+
+        # Xả hết queue và in_flight -> thread kết thúc và hoàn thành chuẩn xác
+        client._connection._tx_queue.clear()
+        t.join(timeout=1.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(client._file_transfers[99]["status"], "completed")
+
+    def test_send_chat_while_file_transfer_active(self) -> None:
+        """Đảm bảo trong lúc đang truyền file lớn, client vẫn gửi được tin nhắn chat qua Stream 0 ngay lập tức."""
+        client = self._create_mock_client("alice")
+        test_file = os.path.join(self.temp_dir, "bg_transfer.dat")
+        with open(test_file, "wb") as f:
+            f.write(b"DATA" * 4096)
+
+        stream = Mock()
+        stream.stream_id = 11
+        client._connection.closed = False
+        client._connection.allocate_stream = Mock(return_value=stream)
+        client._file_transfers[11] = {
+            "filename": "bg_transfer.dat",
+            "size": 16384,
+            "sent": 0,
+            "status": "transferring",
+        }
+        client._connection._tx_queue = [(11, b"chunk", 0, 0)]
+        client._connection.reliability = Mock()
+        client._connection.reliability.can_send.return_value = True
+        client._connection.reliability.in_flight = 1
+
+        # Chạy file transfer ngầm
+        t = threading.Thread(target=client._transfer_file_data, args=(test_file, stream, "bob"), daemon=True)
+        t.start()
+
+        # Trong lúc file đang truyền ngầm, gọi send_chat
+        client.send_chat("bob", "Hello Bob, I am sending you a file!")
+        client._send_json.assert_called_with({
+            "type": "MSG",
+            "target": "bob",
+            "text": "Hello Bob, I am sending you a file!",
+        })
+
+        # Dọn dẹp thread
+        client._connection._tx_queue.clear()
+        client._connection.reliability.in_flight = 0
+        t.join(timeout=1.0)
 
 
 if __name__ == "__main__":

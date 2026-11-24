@@ -363,47 +363,6 @@ class ClientFileTransferRoutingTests(unittest.TestCase):
         client._connection.reliability.in_flight = 0
         t.join(timeout=1.0)
 
-    def test_cleanup_expired_files_after_30_days(self) -> None:
-        """Kiểm tra cơ chế tự động dọn dẹp các file cache đã hết hạn quá 30 ngày (theo mô hình Zalo)."""
-        client = self._create_mock_client("alice")
-        client._download_dir = os.path.join(self.temp_dir, "downloads")
-        os.makedirs(client._download_dir, exist_ok=True)
-
-        now = time.time()
-        # 1. File mới (1 giờ trước)
-        fresh_p = os.path.join(client._download_dir, "100_fresh.dat")
-        with open(fresh_p, "wb") as f:
-            f.write(b"FRESH")
-        os.utime(fresh_p, (now - 3600, now - 3600))
-
-        # 2. File cũ đã hết hạn (31 ngày trước)
-        expired_p = os.path.join(client._download_dir, "200_expired.dat")
-        with open(expired_p, "wb") as f:
-            f.write(b"EXPIRED")
-        old_mtime = now - (31 * 86400)
-        os.utime(expired_p, (old_mtime, old_mtime))
-
-        # File cũ truy xuất qua get_download_file phải trả về None và tự động xóa khỏi đĩa
-        res_expired = client.get_download_file(200)
-        self.assertIsNone(res_expired)
-        self.assertFalse(os.path.exists(expired_p))
-
-        # File mới truy xuất bình thường
-        res_fresh = client.get_download_file(100)
-        self.assertIsNotNone(res_fresh)
-        self.assertTrue(os.path.exists(fresh_p))
-
-        # Thử lại hàm quét dọn hàng loạt cleanup_expired_files
-        expired_p2 = os.path.join(client._download_dir, "300_expired2.dat")
-        with open(expired_p2, "wb") as f:
-            f.write(b"EXPIRED2")
-        os.utime(expired_p2, (old_mtime, old_mtime))
-
-        cleaned = client.cleanup_expired_files(max_age_seconds=30 * 86400)
-        self.assertGreaterEqual(cleaned, 1)
-        self.assertFalse(os.path.exists(expired_p2))
-        self.assertTrue(os.path.exists(fresh_p))
-
 
 if __name__ == "__main__":
     unittest.main()

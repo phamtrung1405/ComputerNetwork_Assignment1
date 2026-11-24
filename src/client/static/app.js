@@ -391,81 +391,6 @@ function createMessageElement(sender, text, timestamp, isOutgoing, isPrivate = f
     return msgEl;
 }
 
-function createFileMessageElement(sender, filename, size, downloadUrl, isOutgoing, target = "all", streamId = null, timestamp = null, msgId = null) {
-    const msgEl = document.createElement("div");
-    msgEl.className = `message ${isOutgoing ? "outgoing" : "incoming"}`;
-    if (msgId) msgEl.dataset.msgId = msgId;
-    if (streamId) msgEl.dataset.streamId = streamId;
-    msgEl.dataset.filename = encodeURIComponent(filename || "file");
-
-    const senderEl = document.createElement("div");
-    senderEl.className = "message-sender";
-    const isPrivate = target && target !== "all";
-    if (isPrivate) {
-        senderEl.innerHTML = isOutgoing
-            ? `You sent a file ➔ @${escapeHtml(target)} <span class="private-badge">🔒 Private</span>`
-            : `@${escapeHtml(sender)} sent a file <span class="private-badge">🔒 Private</span>`;
-    } else {
-        senderEl.textContent = isOutgoing ? "You sent a file:" : `@${sender} sent a file:`;
-    }
-
-    const bubbleEl = document.createElement("div");
-    bubbleEl.className = "message-bubble";
-
-    const isExpired = timestamp && (Date.now() / 1000 - timestamp) > 30 * 86400;
-    const sizeHtml = formatBytes(size || 0) + (isExpired ? ` • <span style="color:var(--accent-danger, #ef4444); font-size:11px; font-weight:600;">Hết hạn (>30 ngày)</span>` : "");
-    const dlAttr = (!isExpired && downloadUrl)
-        ? `href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename || "file")}"`
-        : `href="javascript:void(0)" class="btn-download-file disabled" style="opacity:0.5; pointer-events:none; cursor:not-allowed;" title="Tệp đã hết hạn sau 30 ngày"`;
-    const btnLabel = isExpired ? "⚠️ Đã hết hạn" : "Download";
-
-    const card = document.createElement("div");
-    card.className = "file-card-msg";
-    card.innerHTML = `
-        <div class="file-card-icon">📁</div>
-        <div class="file-card-details">
-            <span class="file-card-name" title="${escapeHtml(filename || "file")}">${escapeHtml(filename || "file")}</span>
-            <span class="file-card-size">${sizeHtml}</span>
-        </div>
-        <a ${dlAttr}>
-            ${btnLabel}
-        </a>
-    `;
-
-    bubbleEl.appendChild(card);
-
-    const timeEl = document.createElement("div");
-    timeEl.className = "message-time";
-    timeEl.textContent = formatTime(timestamp);
-
-    msgEl.appendChild(senderEl);
-    msgEl.appendChild(bubbleEl);
-    msgEl.appendChild(timeEl);
-    return msgEl;
-}
-
-function buildHistoryMessageElement(m) {
-    const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
-    if (typeof m.text === "string" && (m.text.startsWith('{"type":"FILE"') || m.text.startsWith('{"type": "FILE"'))) {
-        try {
-            const fData = JSON.parse(m.text);
-            const fname = fData.filename || "file";
-            const fsize = fData.size || 0;
-            const sid = fData.stream_id || null;
-            const dlUrl = fData.download_url || (sid ? `/api/download?stream_id=${sid}&filename=${encodeURIComponent(fname)}` : "");
-            if (sid) {
-                addFileTransferSidebar(sid, fname, fsize, dlUrl);
-            }
-            return createFileMessageElement(
-                m.from, fname, fsize, dlUrl, isOut, m.target, sid, m.timestamp, m.id
-            );
-        } catch (_) { }
-    }
-    return createMessageElement(
-        m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
-    );
-}
-
 function addChatMessage(sender, text, timestamp, isOutgoing, isPrivate = false, target = "all", msgId = null) {
     const msgEl = createMessageElement(sender, text, timestamp, isOutgoing, isPrivate, target, msgId);
     messagesDiv.appendChild(msgEl);
@@ -500,7 +425,10 @@ async function loadOlderMessages() {
 
             const fragment = document.createDocumentFragment();
             for (const m of data.messages) {
-                const el = buildHistoryMessageElement(m);
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
                 fragment.appendChild(el);
             }
             const firstMsg = messagesDiv.querySelector(".message");
@@ -554,7 +482,10 @@ async function loadInitialChatHistory(target = "all") {
             `;
 
             for (const m of data.messages) {
-                const el = buildHistoryMessageElement(m);
+                const isOut = (m.from || "").toLowerCase() === (currentUsername || "").toLowerCase();
+                const el = createMessageElement(
+                    m.from, m.text, m.timestamp, isOut, m.is_private, m.target, m.id
+                );
                 messagesDiv.appendChild(el);
             }
             scrollToBottom();
@@ -671,8 +602,51 @@ function handleFileReady(data) {
     addFileTransferSidebar(data.stream_id, data.filename, data.size, data.download_url);
 }
 
-function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target, streamId = null, timestamp = null, msgId = null) {
-    const msgEl = createFileMessageElement(sender, filename, size, downloadUrl, isOutgoing, target, streamId, timestamp, msgId);
+function addFileMessage(sender, filename, size, downloadUrl, isOutgoing, target, streamId = null) {
+    const msgEl = document.createElement("div");
+    msgEl.className = `message ${isOutgoing ? "outgoing" : "incoming"}`;
+    if (streamId) msgEl.dataset.streamId = streamId;
+    msgEl.dataset.filename = encodeURIComponent(filename);
+
+    const senderEl = document.createElement("div");
+    senderEl.className = "message-sender";
+    const isPrivate = target && target !== "all";
+    if (isPrivate) {
+        senderEl.innerHTML = isOutgoing
+            ? `You sent a file ➔ @${escapeHtml(target)} <span class="private-badge">🔒 Private</span>`
+            : `@${escapeHtml(sender)} sent a file <span class="private-badge">🔒 Private</span>`;
+    } else {
+        senderEl.textContent = isOutgoing ? "You sent a file:" : `@${sender} sent a file:`;
+    }
+
+    const bubbleEl = document.createElement("div");
+    bubbleEl.className = "message-bubble";
+
+    const card = document.createElement("div");
+    card.className = "file-card-msg";
+    const dlAttr = downloadUrl
+        ? `href="${downloadUrl}" class="btn-download-file" target="_blank" download="${escapeHtml(filename)}"`
+        : `href="javascript:void(0)" class="btn-download-file disabled" style="opacity:0.6; pointer-events:none;"`;
+    card.innerHTML = `
+        <div class="file-card-icon">📁</div>
+        <div class="file-card-details">
+            <span class="file-card-name" title="${escapeHtml(filename)}">${escapeHtml(filename)}</span>
+            <span class="file-card-size">${formatBytes(size)}</span>
+        </div>
+        <a ${dlAttr}>
+            📥 Download
+        </a>
+    `;
+
+    bubbleEl.appendChild(card);
+
+    const timeEl = document.createElement("div");
+    timeEl.className = "message-time";
+    timeEl.textContent = formatTime();
+
+    msgEl.appendChild(senderEl);
+    msgEl.appendChild(bubbleEl);
+    msgEl.appendChild(timeEl);
     messagesDiv.appendChild(msgEl);
     scrollToBottom();
 }
@@ -747,7 +721,6 @@ function handleFileComplete(data) {
 
     const name = data.filename || "file";
     const sizeStr = data.size ? `${formatBytes(data.size)} — ` : "";
-    const dlUrl = data.download_url || `/api/download?stream_id=${data.stream_id}&filename=${encodeURIComponent(name)}`;
     item.innerHTML = `
         <span class="transfer-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
         <div class="progress-bar-bg">
@@ -755,7 +728,7 @@ function handleFileComplete(data) {
         </div>
         <div class="transfer-status" style="display:flex; justify-content:space-between; align-items:center;">
             <span>${sizeStr}✅ Complete</span>
-            <a href="${dlUrl}" style="color:var(--accent-primary); font-weight:600; text-decoration:none;" download>Download</a>
+            <span style="color:var(--accent-success, #10b981); font-size:11px; font-weight:600;">Sent</span>
         </div>
     `;
 }
@@ -879,7 +852,7 @@ fileSendBtn.addEventListener("click", () => {
             const result = JSON.parse(xhr.responseText || "{}");
             if (xhr.status >= 200 && xhr.status < 300 && result.status === "ok") {
                 fileSendBtn.textContent = "✅ Upload successful!";
-                addSystemMessage(`Successfully sent file ${fileToSend.name}!`);
+                addSystemMessage(`📤 Successfully sent file ${fileToSend.name}!`);
 
                 // Display outgoing file card immediately for the sender
                 addFileMessage(
@@ -925,7 +898,7 @@ fileSendBtn.addEventListener("click", () => {
 
 btnDisconnect.addEventListener("click", () => {
     if (currentUsername) {
-        fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => { });
+        fetch(`/api/logout?username=${encodeURIComponent(currentUsername)}`, { method: "POST" }).catch(() => {});
     }
     const userKey = getPortSpecificKey("streamchat_user");
     document.cookie = `${userKey}=; path=/; max-age=0; SameSite=Lax`;
@@ -1102,7 +1075,7 @@ setInterval(async () => {
         } else if (currentUsername && data.users && Array.isArray(data.users)) {
             handleUserList({ users: data.users });
         }
-    } catch (_) { }
+    } catch (_) {}
 }, 5000);
 
 // Automatically check session on page load / reload

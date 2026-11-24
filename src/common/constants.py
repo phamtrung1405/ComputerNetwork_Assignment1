@@ -58,7 +58,7 @@ HEADER_STRUCT_FMT: str = HEADER_FORMAT
 # ──────────────────────────────────────────────────
 MAX_UDP_PAYLOAD: int = 1400     # bytes – safe threshold against IP fragmentation
 MAX_APP_PAYLOAD: int = MAX_UDP_PAYLOAD - HEADER_SIZE - 16  # 1362 bytes (ADR-007: accounting for 22B Header + 16B AEAD GCM Tag)
-RECV_BUFFER_SIZE: int = 65535   # Maximum socket receive buffer size
+RECV_BUFFER_SIZE: int = 10535   # Maximum socket receive buffer size
 
 # ──────────────────────────────────────────────────
 # Timeout & Keepalive (seconds)
@@ -93,10 +93,3 @@ DEFAULT_HTTP_PORT: int = 8080
 AES_KEY_SIZE: int = 32          # AES-256
 GCM_NONCE_SIZE: int = 12        # 96-bit nonce for AES-GCM
 GCM_TAG_SIZE: int = 16          # 128-bit authentication tag
-
-# ──────────────────────────────────────────────────
-# File Retention / Cache Expiration Policy (Zalo-like)
-# ──────────────────────────────────────────────────
-FILE_RETENTION_DAYS: int = 30
-FILE_RETENTION_SECONDS: float = FILE_RETENTION_DAYS * 24 * 3600.0  # 30 days in seconds
-

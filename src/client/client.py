@@ -23,7 +23,6 @@ from urllib.parse import quote
 from common.constants import (
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
-    FILE_RETENTION_SECONDS,
     RECV_BUFFER_SIZE,
     TICK_INTERVAL,
 )
@@ -93,9 +92,6 @@ class ChatClient:
         self._early_file_chunks: dict[int, list[bytes]] = {}
         self._download_dir: str = os.path.join(tempfile.gettempdir(), "streamchat_downloads")
         os.makedirs(self._download_dir, exist_ok=True)
-        self._last_cleanup_time: float = time.time()
-        # Dọn dẹp cache các file đã hết hạn (> 30 ngày)
-        self.cleanup_expired_files()
         # Track active online users
         self.online_users: list[str] = []
 
@@ -313,8 +309,9 @@ class ChatClient:
                                 "progress": pct,
                             })
 
-                    # Backpressure: chỉ đệm tối đa 128 gói trong hàng đợi gửi (tránh đầy RAM)
-                    while len(self._connection._tx_queue) > 128:
+                    # Backpressure & Flow Control:
+                    # Ngăn chặn việc nạp quá tải hàng nghìn gói vào RAM khi tốc độ mạng chậm hơn tốc độ đọc đĩa
+                    while len(self._connection._tx_queue) > 64 or not self._connection.reliability.can_send():
                         if not self._running or self._connection.closed:
                             raise OSError("Connection closed during file transfer")
                         time.sleep(0.002)
@@ -387,11 +384,6 @@ class ChatClient:
                 self._running = False
                 self.event_queue.put({"type": "DISCONNECTED"})
                 break
-
-            now = time.time()
-            if now - self._last_cleanup_time > 3600.0:
-                self._last_cleanup_time = now
-                self.cleanup_expired_files()
 
     # ----------------------- App message callback ----------------
 
@@ -560,21 +552,6 @@ class ChatClient:
             file_info["download_url"] = dl_url
 
             self.event_queue.put({
-                "type": "FILE_PROGRESS",
-                "stream_id": stream_id,
-                "filename": file_info["filename"],
-                "size": file_info["size"],
-                "received": file_info["size"],
-                "progress": 100,
-            })
-            self.event_queue.put({
-                "type": "FILE_COMPLETE",
-                "stream_id": stream_id,
-                "filename": file_info["filename"],
-                "size": file_info["size"],
-                "download_url": dl_url,
-            })
-            self.event_queue.put({
                 "type": "FILE_READY",
                 "stream_id": stream_id,
                 "filename": file_info["filename"],
@@ -586,116 +563,18 @@ class ChatClient:
             })
 
     def get_download_file(self, stream_id: int) -> Optional[tuple[str, str]]:
-        """Retrieve (filename, file_path) for an assembled or sent file.
-
-        Files older than FILE_RETENTION_SECONDS (30 days) are treated as expired.
-        """
-        now = time.time()
+        """Retrieve (filename, file_path) for an assembled or sent file."""
         if stream_id in self._incoming_files:
             info = self._incoming_files[stream_id]
             fpath = info.get("file_path")
             if fpath and os.path.isfile(fpath):
-                try:
-                    if now - os.path.getmtime(fpath) > FILE_RETENTION_SECONDS:
-                        os.remove(fpath)
-                        info["file_path"] = None
-                        return None
-                except OSError:
-                    pass
                 return (info.get("filename", os.path.basename(fpath)), fpath)
         if stream_id in self._file_transfers:
             info = self._file_transfers[stream_id]
             fpath = info.get("file_path")
             if fpath and os.path.isfile(fpath):
-                try:
-                    if now - os.path.getmtime(fpath) > FILE_RETENTION_SECONDS:
-                        os.remove(fpath)
-                        info["file_path"] = None
-                        return None
-                except OSError:
-                    pass
                 return (info.get("filename", os.path.basename(fpath)), fpath)
-
-        # On-disk fallback for files already received (survives client/server restarts!)
-        prefix = f"{stream_id}_"
-        if hasattr(self, "_download_dir") and os.path.isdir(self._download_dir):
-            for fname in os.listdir(self._download_dir):
-                if fname.startswith(prefix):
-                    full_p = os.path.join(self._download_dir, fname)
-                    if os.path.isfile(full_p):
-                        try:
-                            if now - os.path.getmtime(full_p) > FILE_RETENTION_SECONDS:
-                                os.remove(full_p)
-                                return None
-                        except OSError:
-                            pass
-                        real_name = fname[len(prefix):]
-                        return (real_name, full_p)
-
         return None
-
-    def cleanup_expired_files(self, max_age_seconds: float = FILE_RETENTION_SECONDS) -> int:
-        """Clean up downloaded and uploaded files older than max_age_seconds (default 30 days).
-
-        Returns:
-            Number of expired files cleaned up.
-        """
-        now = time.time()
-        removed_count = 0
-
-        # 1. Dọn dẹp thư mục downloads
-        if hasattr(self, "_download_dir") and os.path.isdir(self._download_dir):
-            try:
-                for fname in os.listdir(self._download_dir):
-                    fpath = os.path.join(self._download_dir, fname)
-                    if os.path.isfile(fpath):
-                        try:
-                            if now - os.path.getmtime(fpath) > max_age_seconds:
-                                os.remove(fpath)
-                                removed_count += 1
-                                logger.info(
-                                    "Removed expired download file (>%d days): %s",
-                                    int(max_age_seconds // 86400),
-                                    fpath,
-                                )
-                        except OSError as exc:
-                            logger.debug("Failed to remove expired file %s: %s", fpath, exc)
-            except OSError as exc:
-                logger.debug("Failed to scan download dir for expired files: %s", exc)
-
-        # 2. Dọn dẹp thư mục uploads
-        uploads_root = os.path.join(tempfile.gettempdir(), "streamchat_uploads")
-        if os.path.isdir(uploads_root):
-            try:
-                for subfolder in os.listdir(uploads_root):
-                    subpath = os.path.join(uploads_root, subfolder)
-                    if os.path.isdir(subpath):
-                        folder_empty = True
-                        for fname in os.listdir(subpath):
-                            fpath = os.path.join(subpath, fname)
-                            if os.path.isfile(fpath):
-                                try:
-                                    if now - os.path.getmtime(fpath) > max_age_seconds:
-                                        os.remove(fpath)
-                                        removed_count += 1
-                                        logger.info(
-                                            "Removed expired upload file (>%d days): %s",
-                                            int(max_age_seconds // 86400),
-                                            fpath,
-                                        )
-                                    else:
-                                        folder_empty = False
-                                except OSError:
-                                    folder_empty = False
-                        if folder_empty:
-                            try:
-                                os.rmdir(subpath)
-                            except OSError:
-                                pass
-            except OSError as exc:
-                logger.debug("Failed to scan uploads dir for expired files: %s", exc)
-
-        return removed_count
 
     # ----------------------- Utilities -----------------------
 
